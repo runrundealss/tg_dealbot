@@ -1,0 +1,24 @@
+# State / runtime data
+state.json
+dealbot.log
+dealbot.pid
+products.json
+
+# Generated images
+images/
+*.png
+!RunRunDealsBot.app/Contents/Resources/icon.png
+
+# Token (NEVER commit)
+*token*
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+config.json
