@@ -258,16 +258,34 @@ class BotDashboard(tk.Tk):
         ok, msg = force_refresh(); self._toast(msg, success=ok)
 
     def on_walmart_now(self):
-        """Trigger one Walmart slot run immediately, bypassing daemon lock + cooldown."""
+        """Trigger one Walmart slot run immediately. Rate-limit: 15 min between manual tests."""
+        # Rate-limit check: last manual test must be ≥15 min ago (Walmart IP block guard)
+        state = load_state()
+        last_manual = state.get('walmart',{}).get('last_manual_test')
+        if last_manual:
+            try:
+                dt = datetime.fromisoformat(last_manual)
+                elapsed = (datetime.now() - dt).total_seconds()
+                if elapsed < 900:  # 15 min
+                    remaining = int((900 - elapsed) / 60)
+                    if not messagebox.askyesno(
+                        "Hızlı tekrar tehlikeli",
+                        f"Son manuel test {int(elapsed/60)} dk önceydi. Walmart 15 dk içinde tekrar etmen IP banı tetikleyebilir.\n\n"
+                        f"{remaining} dk daha beklemeni öneririm.\n\nYine de denemek istiyor musun?",
+                        parent=self,
+                    ):
+                        return
+            except Exception: pass
         self._toast("Walmart slot manuel tetiklendi (log'a bak)", success=True)
         def _run():
             try:
                 # Clear cooldown so manual test runs immediately
                 state = load_state()
+                state.setdefault('walmart',{})['last_manual_test'] = datetime.now().isoformat()
                 if state.get('walmart',{}).get('cooldown_until'):
                     del state['walmart']['cooldown_until']
-                    state.setdefault('walmart',{})['consecutive_fail'] = 0
-                    save_state(state)
+                    state['walmart']['consecutive_fail'] = 0
+                save_state(state)
                 # Run in subprocess with DEALBOT_NO_LOCK=1 so daemon's lock doesn't block us
                 env = os.environ.copy()
                 env["DEALBOT_NO_LOCK"] = "1"

@@ -78,7 +78,7 @@ def extract_mavely(post):
 
 
 def resolve_mavely(mavely_url, timeout_sec=45):
-    """Step 4: Playwright to follow Mavely → Walmart, decode base64 if /blocked."""
+    """Step 4: Playwright follows Mavely → Walmart, decode base64 if /blocked."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -94,7 +94,6 @@ def resolve_mavely(mavely_url, timeout_sec=45):
         try:
             page.goto(mavely_url, wait_until='domcontentloaded', timeout=int(timeout_sec*1000))
         except Exception: pass
-        # wait for redirect to settle
         for _ in range(int(timeout_sec/2)):
             time.sleep(1.5)
             if '/blocked' in page.url or 'walmart' in page.url: break
@@ -108,6 +107,74 @@ def resolve_mavely(mavely_url, timeout_sec=45):
             except Exception:
                 return None
     return final if 'walmart.com' in final else None
+
+
+def resolve_and_fetch_product(mavely_url, timeout_sec=60):
+    """Single Playwright session: Mavely link → Walmart product page → NEXT_DATA.
+    Real browser pattern: cookies, JS challenge solved, referer chain natural.
+    Returns (walmart_url, html, next_data_dict, product_dict, blocked_flag)."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None, "", None, None, True
+    exe = _chrome_path()
+    walmart_url = None
+    html = ""
+    with sync_playwright() as p:
+        kw = {"headless": True,
+              "args": ["--disable-blink-features=AutomationControlled"]}
+        if exe: kw["executable_path"] = exe
+        browser = p.chromium.launch(**kw)
+        ua = random.choice(UA_ROTATION) if 'random' in dir() else UA_ROTATION[0]
+        import random as _r
+        ua = _r.choice(UA_ROTATION)
+        ctx = browser.new_context(
+            user_agent=ua,
+            viewport={'width': 390, 'height': 844},
+            locale='en-US',
+        )
+        # Stealth: remove webdriver flag
+        ctx.add_init_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+            "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
+            "Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});"
+        )
+        page = ctx.new_page()
+        try:
+            page.goto(mavely_url, wait_until='domcontentloaded', timeout=int(timeout_sec*1000))
+        except Exception: pass
+        # Wait for redirect chain to settle on walmart.com
+        for _ in range(int(timeout_sec/2)):
+            time.sleep(1.5)
+            if 'walmart' in page.url and '/blocked' not in page.url: break
+            if '/blocked' in page.url:
+                # Decode the encoded URL and navigate directly
+                m = re.search(r'/blocked\?url=([A-Za-z0-9_+/=]+)', page.url)
+                if m:
+                    try:
+                        target = "https://www.walmart.com" + base64.b64decode(m.group(1)).decode()
+                        page.goto(target, wait_until='domcontentloaded', timeout=int(timeout_sec*1000))
+                    except Exception: pass
+                break
+        walmart_url = page.url
+        # Wait for the page to fully load NEXT_DATA
+        for _ in range(20):
+            html = page.content()
+            if '__NEXT_DATA__' in html and len(html) > 200_000:
+                break
+            time.sleep(1)
+        browser.close()
+    blocked = (len(html) < 50_000) or ('__NEXT_DATA__' not in html)
+    if blocked:
+        return walmart_url, html, None, None, True
+    m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    if not m: return walmart_url, html, None, None, False
+    try:
+        data = json.loads(m.group(1))
+    except Exception:
+        return walmart_url, html, None, None, False
+    prod = data.get('props',{}).get('pageProps',{}).get('initialData',{}).get('data',{}).get('product')
+    return walmart_url, html, data, prod, False
 
 
 def extract_us_item_id(walmart_url):
@@ -290,7 +357,7 @@ def run_one(cfg, token, channel, state, posted_hashes, log_fn):
             log_fn(f"[step3] {post_uid} skip: no Mavely link")
             continue
 
-        # Step 4
+        # Step 4: Mavely → Walmart URL (Playwright — Mavely için kararlı)
         ctx['walmart_url'] = resolve_mavely(ctx['mavely_url'])
         if not ctx['walmart_url'] or 'walmart.com' not in (ctx['walmart_url'] or ''):
             log_fn(f"[step4] {post_uid} skip: Mavely resolve fail")
@@ -299,10 +366,10 @@ def run_one(cfg, token, channel, state, posted_hashes, log_fn):
         # Step 5
         ctx['us_item_id'] = extract_us_item_id(ctx['walmart_url'])
         if not ctx['us_item_id']:
-            log_fn(f"[step5] {post_uid} skip: no usItemId in {ctx['walmart_url'][:80]}")
+            log_fn(f"[step5] {post_uid} skip: no usItemId")
             continue
 
-        # Step 6-10  (rate-limit: random 10-20s between Walmart fetches)
+        # Step 6-10 (curl_cffi — Walmart product data, rate limit guarded)
         import random
         time.sleep(random.uniform(10, 20))
         try:
@@ -314,7 +381,7 @@ def run_one(cfg, token, channel, state, posted_hashes, log_fn):
             log_fn(f"[step6] {post_uid} fetch err: {e}")
             continue
         if blocked:
-            log_fn(f"[step6] {post_uid} BLOCKED by Walmart — aborting batch")
+            log_fn(f"[step6] {post_uid} BLOCKED — aborting batch")
             return ('BLOCKED', None, None)
         if not prod:
             log_fn(f"[step7] {post_uid} skip: product None")
