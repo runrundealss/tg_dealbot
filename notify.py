@@ -2,6 +2,14 @@
 notify.py — Telegram admin alert with hourly throttle.
 Sends CRITICAL events to admin_chat_id from config.
 """
+# SSL bootstrap (macOS system Python 3.9 + corp / self-signed chain fix)
+import ssl
+try:
+    import certifi
+    ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    ssl._create_default_https_context = ssl._create_unverified_context
+
 import json, os, time, urllib.request, urllib.parse
 from datetime import datetime, timedelta
 

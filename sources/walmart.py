@@ -8,6 +8,14 @@ and falls through to the next product. CRITICAL after 5 consecutive failures.
 
 Self-tracks consecutive_fail count via state["walmart"]["consecutive_fail"].
 """
+# SSL bootstrap (must run before any HTTPS call)
+import ssl
+try:
+    import certifi
+    ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    ssl._create_default_https_context = ssl._create_unverified_context
+
 import os, sys, re, json, time, hashlib, urllib.request, urllib.parse, base64, subprocess
 from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
