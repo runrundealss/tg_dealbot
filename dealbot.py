@@ -446,7 +446,9 @@ def run_walmart_slot(state, dry=False):
     if status == 'BLOCKED':
         log("WM: Walmart blocked — entering 60-min cooldown")
         notify.critical(TOKEN, _cfg.get('admin_chat_id'),
-            "Walmart rate-limit aktif (HTTP/blocked response). Bot 60dk pas geçiyor.",
+            "⚠️ Walmart geçici olarak bizi engelliyor (rate-limit).\n\n"
+            "Walmart kaynağı 60 dk pas geçilecek, Amazon kaynağı normal çalışıyor.\n"
+            "Bot durmuyor, sadece Walmart slot'u atlanıyor.",
             _cfg.get('alert_throttle_per_hour', 5))
         state.setdefault('walmart',{})['cooldown_until'] = (datetime.now() + timedelta(minutes=60)).isoformat()
         save_state(state)
