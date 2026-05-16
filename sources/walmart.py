@@ -25,17 +25,17 @@ sys.path.insert(0, BASE_DIR)
 import validators
 import notify
 
-UA_PHONE = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-}
+# Browser TLS impersonations that Walmart doesn't block (curl_cffi)
+WORKING_IMPERSONATES = ["safari17_2_ios", "safari18_0", "chrome131"]
+UA_ROTATION = [
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+]
+# Legacy header dict kept for backward-compat (Mavely resolve etc.)
+UA_PHONE = {"User-Agent": UA_ROTATION[0]}
 LOGO_PATH = os.path.join(BASE_DIR, "assets", "logo.png")
 IMG_TMP   = "/tmp/wm_pipe"
 COLLAGE_DIR = os.path.join(BASE_DIR, "images", "walmart")
@@ -117,20 +117,27 @@ def extract_us_item_id(walmart_url):
 
 
 def fetch_walmart_detail(us_item_id):
-    """Step 6-10. Uses CURL subprocess (Python urllib's TLS fingerprint is fingerprinted by Walmart).
+    """Step 6-10. Uses curl_cffi with rotating browser impersonations + UA.
+    Walmart fingerprints urllib's TLS handshake; curl_cffi mimics real Chrome/Safari.
     Returns (html, next_data, product, blocked_flag)."""
+    import random
+    try:
+        from curl_cffi import requests as cffi_requests
+    except ImportError:
+        # Fallback to subprocess curl if curl_cffi missing
+        return _fetch_via_curl(us_item_id)
+
+    imp = random.choice(WORKING_IMPERSONATES)
+    ua  = random.choice(UA_ROTATION)
     url = f"https://www.walmart.com/ip/{us_item_id}"
-    proc = subprocess.run(
-        ["curl", "-sSL", "--compressed", "--max-time", "30",
-         "-A", UA_PHONE["User-Agent"],
-         "-H", f"Accept: {UA_PHONE['Accept']}",
-         "-H", f"Accept-Language: {UA_PHONE['Accept-Language']}",
-         "-H", "Upgrade-Insecure-Requests: 1",
-         url],
-        capture_output=True, text=True, timeout=45,
-    )
-    html = proc.stdout
-    # Blocked detection: tiny HTML or no NEXT_DATA → bot detection
+    try:
+        r = cffi_requests.get(url, impersonate=imp,
+                              headers={"User-Agent": ua,
+                                       "Accept-Language": "en-US,en;q=0.9"},
+                              timeout=30)
+        html = r.text
+    except Exception as e:
+        return f"err: {e}", None, None, True
     if len(html) < 50_000 or '__NEXT_DATA__' not in html:
         return html, None, None, True
     m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
@@ -139,6 +146,26 @@ def fetch_walmart_detail(us_item_id):
         data = json.loads(m.group(1))
     except Exception:
         return html, None, None, False
+    prod = data.get('props',{}).get('pageProps',{}).get('initialData',{}).get('data',{}).get('product')
+    return html, data, prod, False
+
+
+def _fetch_via_curl(us_item_id):
+    """Fallback: shell curl when curl_cffi unavailable."""
+    url = f"https://www.walmart.com/ip/{us_item_id}"
+    proc = subprocess.run(
+        ["curl", "-sSL", "--compressed", "--max-time", "30",
+         "-A", UA_PHONE["User-Agent"],
+         "-H", "Accept-Language: en-US,en;q=0.9",
+         "-H", "Upgrade-Insecure-Requests: 1",
+         url], capture_output=True, text=True, timeout=45)
+    html = proc.stdout
+    if len(html) < 50_000 or '__NEXT_DATA__' not in html:
+        return html, None, None, True
+    m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    if not m: return html, None, None, False
+    try: data = json.loads(m.group(1))
+    except Exception: return html, None, None, False
     prod = data.get('props',{}).get('pageProps',{}).get('initialData',{}).get('data',{}).get('product')
     return html, data, prod, False
 
@@ -269,9 +296,9 @@ def run_one(cfg, token, channel, state, posted_hashes, log_fn):
             log_fn(f"[step5] {post_uid} skip: no usItemId in {ctx['walmart_url'][:80]}")
             continue
 
-        # Step 6-10  (rate-limit: random 3-7s between Walmart fetches)
+        # Step 6-10  (rate-limit: random 2-5s between Walmart fetches)
         import random
-        time.sleep(random.uniform(3, 7))
+        time.sleep(random.uniform(2, 5))
         try:
             html, nd, prod, blocked = fetch_walmart_detail(ctx['us_item_id'])
             ctx['walmart_html'] = html

@@ -54,7 +54,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
 fi
 PY="$VENV_DIR/bin/python"
 "$PY" -m pip install --upgrade --quiet pip 2>/dev/null || true
-"$PY" -m pip install --quiet pillow rumps playwright
+"$PY" -m pip install --quiet pillow rumps playwright curl_cffi
 echo "==> Playwright Chromium indir (~120MB)"
 "$PY" -m playwright install chromium 2>&1 | tail -3 || true
 "$PY" -c "import tkinter, PIL, playwright; print('   PIL', PIL.__version__, '+ tkinter + playwright OK')"
