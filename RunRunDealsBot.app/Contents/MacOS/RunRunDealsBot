@@ -1,13 +1,20 @@
 #!/bin/bash
-# RunRunDeals Bot launcher — uygun Python'u otomatik bulur
+# RunRunDeals Telegram Bot launcher — venv'i tercih eder, yoksa system Python'a düşer
 DIR="$HOME/tg_dealbot"
 if [ ! -d "$DIR" ]; then
-  /usr/bin/osascript -e "display alert \"RunRunDeals Bot\" message \"Kurulum bulunamadı: $DIR\"" >/dev/null 2>&1
+  /usr/bin/osascript -e "display alert \"Run Run Deals Telegram Bot\" message \"Kurulum bulunamadı: $DIR\"" >/dev/null 2>&1
   exit 1
 fi
 cd "$DIR"
 
-# Tkinter destekleyen ilk Python'u kullan
+# 1) Önce venv'i dene
+if [ -x "$DIR/.venv/bin/python" ]; then
+  if "$DIR/.venv/bin/python" -c "import tkinter, PIL" 2>/dev/null; then
+    exec "$DIR/.venv/bin/python" panel_app.py
+  fi
+fi
+
+# 2) Yoksa sistem Python'larını dene
 for PY in \
   /opt/homebrew/bin/python3.12 \
   /opt/homebrew/bin/python3.13 \
@@ -17,12 +24,10 @@ for PY in \
   /usr/bin/python3 \
   "$(command -v python3 2>/dev/null)" ; do
   [ -x "$PY" ] || continue
-  if "$PY" -c "import tkinter" 2>/dev/null; then
-    # Pillow eksikse otomatik kur
-    "$PY" -c "import PIL" 2>/dev/null || "$PY" -m pip install --user --quiet pillow 2>/dev/null
+  if "$PY" -c "import tkinter, PIL" 2>/dev/null; then
     exec "$PY" panel_app.py
   fi
 done
 
-/usr/bin/osascript -e 'display alert "RunRunDeals Bot" message "Tkinter destekli Python bulunamadı. Terminalde: brew install python@3.12"' >/dev/null 2>&1
+/usr/bin/osascript -e 'display alert "Run Run Deals Telegram Bot" message "Uygun Python bulunamadı. Terminalde: bash ~/tg_dealbot/install_on_new_mac.sh"' >/dev/null 2>&1
 exit 1

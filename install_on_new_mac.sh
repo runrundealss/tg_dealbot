@@ -1,5 +1,5 @@
 #!/bin/bash
-# RunRunDeals Bot — yeni Mac'e kurulum
+# RunRunDeals Telegram Bot — yeni Mac'e kurulum
 # Kullanım:
 #   curl -fsSL https://raw.githubusercontent.com/runrundealss/tg_dealbot/main/install_on_new_mac.sh \
 #     | REPO_URL=https://github.com/runrundealss/tg_dealbot.git bash
@@ -10,15 +10,16 @@ INSTALL_DIR="$HOME/tg_dealbot"
 PLIST_NAME="com.runrundeals.dealbot.plist"
 LAUNCH_DIR="$HOME/Library/LaunchAgents"
 TOKEN_FILE="$INSTALL_DIR/.token"
+VENV_DIR="$INSTALL_DIR/.venv"
 
-# ---- 0) Daemon'u durdur (varsa) ----
+# ---- 0) Önce daemon'u durdur ----
 if [ -f "$LAUNCH_DIR/$PLIST_NAME" ]; then
   launchctl unload "$LAUNCH_DIR/$PLIST_NAME" 2>/dev/null || true
 fi
 
 # ---- 1) Tkinter destekli Python bul ----
 echo "==> Tkinter destekleyen Python aranıyor"
-PY=""
+SYS_PY=""
 for P in \
   /opt/homebrew/bin/python3.12 \
   /opt/homebrew/bin/python3.13 \
@@ -28,14 +29,14 @@ for P in \
   /usr/bin/python3 ; do
   [ -x "$P" ] || continue
   if "$P" -c "import tkinter" 2>/dev/null; then
-    PY="$P"; break
+    SYS_PY="$P"; break
   fi
 done
-if [ -z "$PY" ]; then
+if [ -z "$SYS_PY" ]; then
   echo "❌ Tkinter destekli Python yok. Şu komutu çalıştır: brew install python@3.12"
   exit 1
 fi
-echo "    Python: $PY"
+echo "    Base Python: $SYS_PY"
 
 # ---- 2) Repo clone / pull ----
 echo "==> Repo clone -> $INSTALL_DIR"
@@ -46,11 +47,15 @@ else
   cd "$INSTALL_DIR"
 fi
 
-# ---- 3) Pillow + rumps (ZORLA kur) ----
-echo "==> Pillow + rumps yükleniyor"
-"$PY" -m pip install --user --upgrade --quiet pip 2>/dev/null || true
-"$PY" -m pip install --user --quiet pillow rumps
-"$PY" -c "import PIL; print('   PIL OK:', PIL.__version__)"
+# ---- 3) Venv oluştur + Pillow/rumps kur ----
+echo "==> Venv kuruluyor: $VENV_DIR"
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+  "$SYS_PY" -m venv "$VENV_DIR"
+fi
+PY="$VENV_DIR/bin/python"
+"$PY" -m pip install --upgrade --quiet pip 2>/dev/null || true
+"$PY" -m pip install --quiet pillow rumps
+"$PY" -c "import tkinter, PIL; print('   PIL', PIL.__version__, '+ tkinter OK')"
 
 # ---- 4) Font ----
 echo "==> Bangers font"
@@ -68,24 +73,23 @@ import json
 p = "$INSTALL_DIR/config.json"
 c = json.load(open(p))
 c["strapi_url"] = "https://rundealsmobile.herokuapp.com/urunlers"
-c["token_path"] = "$TOKEN_FILE"   # repo içinde, TCC engeli yok
+c["token_path"] = "$TOKEN_FILE"
 json.dump(c, open(p,"w"), indent=2)
-print("   config.json yazıldı:", p)
+print("   config.json yazıldı")
 PYEOF
 
 # ---- 6) Bot token ----
 echo "==> Bot token"
-# Eski Downloads konumundan migrate
 OLD_TOKEN="$HOME/Downloads/untitled text 5.txt"
 if [ ! -s "$TOKEN_FILE" ] && [ -s "$OLD_TOKEN" ]; then
   cp "$OLD_TOKEN" "$TOKEN_FILE" 2>/dev/null || true
 fi
 if [ ! -s "$TOKEN_FILE" ]; then
   if [ -e /dev/tty ]; then
-    read -p "    Telegram bot token: " TOKEN < /dev/tty
+    read -p "    Telegram bot token: " TOKEN_IN < /dev/tty
   fi
-  if [ -n "$TOKEN" ]; then
-    echo -n "$TOKEN" > "$TOKEN_FILE"
+  if [ -n "$TOKEN_IN" ]; then
+    echo -n "$TOKEN_IN" > "$TOKEN_FILE"
     echo "    Token kaydedildi: $TOKEN_FILE"
   else
     echo "    ⚠️  Token girilmedi. Sonra elle koy:"
@@ -96,7 +100,7 @@ else
 fi
 chmod 600 "$TOKEN_FILE" 2>/dev/null || true
 
-# ---- 7) LaunchAgent ----
+# ---- 7) LaunchAgent (venv Python ile) ----
 echo "==> LaunchAgent kuruluyor"
 mkdir -p "$LAUNCH_DIR"
 sed -e "s|__PYTHON__|$PY|g" -e "s|__HOME__|$HOME|g" \
@@ -111,10 +115,10 @@ xattr -dr com.apple.quarantine /Applications/RunRunDealsBot.app 2>/dev/null || t
 
 echo ""
 echo "✅ Kurulum tamam."
+echo "   Venv:     $VENV_DIR"
 echo "   Python:   $PY"
-echo "   Repo:     $INSTALL_DIR"
 echo "   Token:    $TOKEN_FILE"
 echo "   Plist:    $LAUNCH_DIR/$PLIST_NAME"
-echo "   App:      /Applications/RunRunDealsBot.app"
+echo "   App:      /Applications/Run Run Deals Telegram Bot.app"
 echo ""
 echo "   ⚠️  Auto-login: System Settings → Users & Groups → 'Automatically log in as'"
