@@ -517,10 +517,13 @@ def main():
         prune_state(state)
         now = datetime.now()
         m = now.minute
+        # Refresh enable flags from disk every loop (panel can toggle them)
+        state_snap = load_state()
+        strapi_enabled  = state_snap.get('sources',{}).get('strapi',  {}).get('enabled', True)
+        walmart_enabled = state_snap.get('sources',{}).get('walmart', {}).get('enabled', True)
 
         # ---- Strapi slot (current cadence: 10 min) ----
-        # Keep existing every-10-min behavior unchanged for Strapi but offset minute
-        if last_slot != ('strapi', m) and (m - strapi_min) % 10 == 0:
+        if last_slot != ('strapi', m) and (m - strapi_min) % 10 == 0 and strapi_enabled:
             refresh_products(state)
             try:
                 products = json.load(open(PRODUCTS_PATH))
@@ -538,13 +541,16 @@ def main():
                 log(f"strapi slot err: {e}")
 
         # ---- Walmart slot (hourly at walmart_min) ----
-        if last_slot != ('walmart', m) and m == walmart_min:
+        if last_slot != ('walmart', m) and m == walmart_min and walmart_enabled:
             if is_walmart_cooldown(state):
                 log(f"WM: cooldown active until {state['walmart']['cooldown_until']}")
             else:
                 log(f"--- Walmart slot @ :{m:02d} ---")
                 run_walmart_slot(state, dry=dry)
                 last_slot = ('walmart', m)
+        elif m == walmart_min and not walmart_enabled and last_slot != ('walmart', m):
+            log("WM: kaynak panel'den kapatılmış, slot atlandı")
+            last_slot = ('walmart', m)
 
         if once:
             log("--once flag set, exiting")

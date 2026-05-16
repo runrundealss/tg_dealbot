@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""RunRunDeals Bot — Native macOS dashboard (Tkinter)."""
+"""RunRunDeals Telegram Bot — macOS Dashboard (Tkinter).
+İki bağımsız kaynak (Amazon/Strapi + Walmart/savings101) için ayrı tab + ayrı kontrol.
+Daemon arka planda hep çalışır; her kaynak ayrı enable/disable flag'i ile yönetilir."""
 import json, os, subprocess, signal, time, sys, threading, webbrowser
 from datetime import datetime, timedelta
 import tkinter as tk
@@ -12,7 +14,7 @@ LOG       = f"{BASE}/dealbot.log"
 PID_FILE  = f"{BASE}/dealbot.pid"
 DAEMON_PY = f"{BASE}/dealbot.py"
 
-# ---------- helpers ----------
+# ---------- daemon / state helpers ----------
 
 def is_running():
     if not os.path.exists(PID_FILE): return None
@@ -26,7 +28,7 @@ def is_running():
         return None
 
 def start_daemon():
-    if is_running(): return False, "Zaten çalışıyor"
+    if is_running(): return False, "Daemon zaten çalışıyor"
     log_f = open(LOG, "a")
     p = subprocess.Popen(
         ["/usr/bin/caffeinate", "-i", sys.executable, DAEMON_PY],
@@ -34,18 +36,18 @@ def start_daemon():
         cwd=BASE, start_new_session=True,
     )
     with open(PID_FILE, "w") as f: f.write(str(p.pid))
-    return True, f"Başlatıldı (PID {p.pid})"
+    return True, f"Daemon başlatıldı (PID {p.pid})"
 
 def stop_daemon():
     pid = is_running()
-    if not pid: return False, "Zaten kapalı"
+    if not pid: return False, "Daemon zaten kapalı"
     try: os.killpg(os.getpgid(pid), signal.SIGTERM)
     except Exception:
         try: os.kill(pid, signal.SIGTERM)
         except: pass
     try: os.remove(PID_FILE)
     except: pass
-    return True, f"Durduruldu (PID {pid})"
+    return True, f"Daemon durduruldu (PID {pid})"
 
 def force_refresh():
     subprocess.Popen([sys.executable, DAEMON_PY, "--refresh", "--once", "--dry-run"], cwd=BASE)
@@ -53,10 +55,27 @@ def force_refresh():
 
 def load_state():
     if not os.path.exists(STATE):
-        return {"posted": [], "failed": {}, "hashes": {}, "last_refresh": 0}
+        return {"posted": [], "failed": {}, "hashes": {}, "last_refresh": 0, "sources": {}}
     try:
-        return json.load(open(STATE))
-    except: return {"posted": [], "failed": {}, "hashes": {}, "last_refresh": 0}
+        s = json.load(open(STATE))
+        s.setdefault("sources", {})
+        return s
+    except: return {"posted": [], "failed": {}, "hashes": {}, "last_refresh": 0, "sources": {}}
+
+def save_state(s):
+    try:
+        with open(STATE, "w") as f: json.dump(s, f, indent=2)
+    except Exception: pass
+
+def source_enabled(source_name, default=True):
+    """Read enable/disable from state; default True so old states keep working."""
+    s = load_state()
+    return s.get("sources", {}).get(source_name, {}).get("enabled", default)
+
+def set_source_enabled(source_name, enabled):
+    s = load_state()
+    s.setdefault("sources", {}).setdefault(source_name, {})["enabled"] = bool(enabled)
+    save_state(s)
 
 def load_queue():
     if not os.path.exists(PRODUCTS): return []
@@ -73,196 +92,204 @@ class BotDashboard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("🛒 Run Run Deals Telegram Bot")
-        self.geometry("1080x780")
-        self.minsize(900, 600)
+        self.geometry("1180x820")
+        self.minsize(960, 640)
         self.configure(bg="#f5f5f7")
-
         self.style = ttk.Style(self)
-        try: self.style.theme_use("aqua")    # native macOS
+        try: self.style.theme_use("aqua")
         except: pass
 
         self._build_header()
-        self._build_metrics()
         self._build_tabs()
         self._build_statusbar()
+        self.refresh()
+        self.after(5000, self._auto_refresh)
 
-        self.refresh()                       # initial
-        self.after(5000, self._auto_refresh) # then every 5s
-
-    # ---- HEADER ----
+    # ---- HEADER (sadece global daemon + global butonlar) ----
     def _build_header(self):
         bar = tk.Frame(self, bg="#f5f5f7", padx=16, pady=12)
         bar.pack(fill="x", side="top")
-
         tk.Label(bar, text="🛒 Run Run Deals Telegram Bot",
                  font=("SF Pro Display", 22, "bold"),
                  bg="#f5f5f7").pack(side="left")
-
-        self.status_label = tk.Label(bar, text="🔴 TELEGRAM",
-                                     font=("SF Pro Display", 12, "bold"),
-                                     bg="#f5f5f7", fg="#d32f2f", padx=18)
-        self.status_label.pack(side="left", padx=12)
-
-        btn_frame = tk.Frame(bar, bg="#f5f5f7")
-        btn_frame.pack(side="right")
-
-        self.btn_start = ttk.Button(btn_frame, text="▶ Başlat", command=self.on_start)
-        self.btn_start.pack(side="left", padx=4)
-        self.btn_stop  = ttk.Button(btn_frame, text="■ Durdur", command=self.on_stop, state="disabled")
-        self.btn_stop.pack(side="left", padx=4)
-        self.btn_refresh = ttk.Button(btn_frame, text="🔄 Strapi Refresh", command=self.on_refresh)
-        self.btn_refresh.pack(side="left", padx=4)
-        self.btn_update = ttk.Button(btn_frame, text="⬇️ Güncelle", command=self.on_update)
+        # global daemon status
+        self.daemon_label = tk.Label(bar, text="⏳", font=("SF Pro Display", 12, "bold"),
+                                      bg="#f5f5f7", fg="#666", padx=18)
+        self.daemon_label.pack(side="left", padx=12)
+        # right side: global controls
+        btns = tk.Frame(bar, bg="#f5f5f7")
+        btns.pack(side="right")
+        self.btn_update = ttk.Button(btns, text="⬇️ Güncelle", command=self.on_update)
         self.btn_update.pack(side="left", padx=4)
-        self.btn_chan = ttk.Button(btn_frame, text="🔗 Kanalı Aç",
-                                   command=lambda: webbrowser.open("https://t.me/RunRunDeals"))
-        self.btn_chan.pack(side="left", padx=4)
-
-    # ---- METRICS ----
-    def _build_metrics(self):
-        wrap = tk.Frame(self, bg="#f5f5f7", padx=16)
-        wrap.pack(fill="x")
-        self.metric_widgets = {}
-        cards = [("Bugün","today"), ("Son 7 gün","week"), ("Toplam","total"),
-                 ("Kuyruk","queue"), ("Hatalı","failed"), ("Sonraki post","next")]
-        for i, (label, key) in enumerate(cards):
-            f = tk.Frame(wrap, bg="white", bd=0, padx=14, pady=10,
-                         highlightbackground="#dddddd", highlightthickness=1)
-            f.grid(row=0, column=i, padx=4, sticky="ew")
-            wrap.grid_columnconfigure(i, weight=1)
-            tk.Label(f, text=label, font=("SF Pro Display", 11),
-                     bg="white", fg="#666").pack(anchor="w")
-            v = tk.Label(f, text="—", font=("SF Pro Display", 22, "bold"),
-                         bg="white", fg="#111")
-            v.pack(anchor="w")
-            self.metric_widgets[key] = v
+        ttk.Button(btns, text="🔗 Kanalı Aç",
+                   command=lambda: webbrowser.open("https://t.me/RunRunDeals")).pack(side="left", padx=4)
 
     # ---- TABS ----
     def _build_tabs(self):
-        # Source filter bar
-        sf = tk.Frame(self, bg="#f5f5f7", padx=16, pady=4)
-        sf.pack(fill="x")
-        tk.Label(sf, text="Kaynak:", bg="#f5f5f7",
-                 font=("SF Pro Display", 11, "bold")).pack(side="left", padx=(0,8))
-        self.source_var = tk.StringVar(value="all")
-        for txt, val in [("📊 Hepsi","all"),("📦 Amazon","strapi"),("🛒 Walmart","walmart")]:
-            ttk.Radiobutton(sf, text=txt, value=val, variable=self.source_var,
-                            command=self.refresh).pack(side="left", padx=4)
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True, padx=16, pady=12)
+        self._build_source_tab("strapi", "📦 Amazon")
+        self._build_source_tab("walmart", "🛒 Walmart")
+        self._build_log_tab()
+        self._build_failed_tab()
 
-        nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=16, pady=(4,12))
+    def _build_source_tab(self, src, title):
+        """Build identical layout for either source."""
+        frame = tk.Frame(self.nb, bg="white")
+        self.nb.add(frame, text=title)
 
-        # Queue tab
-        f_q = tk.Frame(nb, bg="white")
-        nb.add(f_q, text="📋 Kuyruk")
-        cols = ("src","disc","title","prices","code")
-        self.tree_q = ttk.Treeview(f_q, columns=cols, show="headings", height=18)
-        for cid, txt, w in [("src","Kaynak",80),("disc","%",60),("title","Ürün",420),
-                            ("prices","Was → Now",160),("code","Kod",140)]:
-            self.tree_q.heading(cid, text=txt)
-            self.tree_q.column(cid, width=w, anchor="w")
-        self.tree_q.pack(fill="both", expand=True, padx=10, pady=10)
+        # Top control row
+        ctrl = tk.Frame(frame, bg="white", padx=10, pady=10)
+        ctrl.pack(fill="x")
+        status_lbl = tk.Label(ctrl, text="⏳", font=("SF Pro Display", 13, "bold"),
+                              bg="white", padx=10)
+        status_lbl.pack(side="left")
+        btn_start = ttk.Button(ctrl, text="▶ Başlat",
+                               command=lambda s=src: self.on_source_start(s))
+        btn_start.pack(side="left", padx=4)
+        btn_stop  = ttk.Button(ctrl, text="■ Durdur",
+                               command=lambda s=src: self.on_source_stop(s))
+        btn_stop.pack(side="left", padx=4)
+        if src == "strapi":
+            ttk.Button(ctrl, text="🔄 Strapi Refresh",
+                       command=self.on_strapi_refresh).pack(side="left", padx=4)
+        else:
+            ttk.Button(ctrl, text="🛒 Slot Şimdi Çalıştır",
+                       command=self.on_walmart_now).pack(side="left", padx=4)
 
-        # Log tab
-        f_l = tk.Frame(nb, bg="white")
-        nb.add(f_l, text="📜 Log")
-        # Toolbar — Log Temizle butonu
-        log_bar = tk.Frame(f_l, bg="white")
-        log_bar.pack(fill="x", padx=10, pady=(10, 0))
-        tk.Button(
-            log_bar, text="🗑  Log Temizle",
-            command=self._clear_log,
-            bg="#dc2626", fg="white",
-            relief="flat", padx=14, pady=6,
-            font=("SF Pro Text", 12, "bold"),
-        ).pack(side="right")
+        # Metrics row
+        metrics = tk.Frame(frame, bg="white")
+        metrics.pack(fill="x", padx=10, pady=(0, 10))
+        widgets = {}
+        for i, (lbl, key) in enumerate([("Bugün","today"),("Son 7 gün","week"),
+                                         ("Toplam","total"),("Sonraki post","next")]):
+            f = tk.Frame(metrics, bg="#f5f5f7", padx=12, pady=8,
+                         highlightbackground="#dddddd", highlightthickness=1)
+            f.grid(row=0, column=i, padx=4, sticky="ew")
+            metrics.grid_columnconfigure(i, weight=1)
+            tk.Label(f, text=lbl, font=("SF Pro Display", 10),
+                     bg="#f5f5f7", fg="#666").pack(anchor="w")
+            v = tk.Label(f, text="—", font=("SF Pro Display", 18, "bold"),
+                         bg="#f5f5f7", fg="#111")
+            v.pack(anchor="w")
+            widgets[key] = v
+
+        # Recent posts table
+        rcols = ("time","id","title","msg")
+        col_titles = [("time","Saat",110),("id","ID",200),
+                      ("title","Başlık",520),("msg","msg_id",80)]
+        recent_tree = ttk.Treeview(frame, columns=rcols, show="headings", height=20)
+        for cid, txt, w in col_titles:
+            recent_tree.heading(cid, text=txt)
+            recent_tree.column(cid, width=w, anchor="w")
+        recent_tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Save handles per-source
+        setattr(self, f"{src}_status_lbl", status_lbl)
+        setattr(self, f"{src}_btn_start", btn_start)
+        setattr(self, f"{src}_btn_stop",  btn_stop)
+        setattr(self, f"{src}_metrics",   widgets)
+        setattr(self, f"{src}_tree",      recent_tree)
+
+    def _build_log_tab(self):
+        f = tk.Frame(self.nb, bg="white"); self.nb.add(f, text="📜 Genel Log")
+        bar = tk.Frame(f, bg="white"); bar.pack(fill="x", padx=10, pady=(10,0))
+        tk.Button(bar, text="🗑  Log Temizle", command=self._clear_log,
+                  bg="#dc2626", fg="white", relief="flat", padx=14, pady=6,
+                  font=("SF Pro Text", 12, "bold")).pack(side="right")
         self.log_text = scrolledtext.ScrolledText(
-            f_l, font=("Menlo", 11), bg="#1e1e1e", fg="#d4d4d4",
+            f, font=("Menlo", 11), bg="#1e1e1e", fg="#d4d4d4",
             insertbackground="white", wrap="word")
         self.log_text.pack(fill="both", expand=True, padx=10, pady=10)
         for tag, color in [("SENT","#7ec07e"),("FAIL","#f48771"),
                             ("SKIP","#999"),("DAEMON","#dcdcaa"),
-                            ("refresh","#4fc1ff")]:
+                            ("WM","#4fc1ff"),("refresh","#4fc1ff")]:
             self.log_text.tag_configure(tag, foreground=color)
 
-        # Recent posts
-        f_r = tk.Frame(nb, bg="white")
-        nb.add(f_r, text="📰 Son Postlar")
-        rcols = ("time","src","id","asin","title","msg")
-        self.tree_r = ttk.Treeview(f_r, columns=rcols, show="headings", height=18)
-        for cid, txt, w in [("time","Saat",110),("src","Kaynak",80),("id","ID",200),
-                             ("asin","ASIN",100),("title","Başlık",380),("msg","msg_id",80)]:
-            self.tree_r.heading(cid, text=txt)
-            self.tree_r.column(cid, width=w, anchor="w")
-        self.tree_r.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # Failed
-        f_f = tk.Frame(nb, bg="white")
-        nb.add(f_f, text="⚠️ Hatalı")
-        fcols = ("id","attempts","stage","last","err")
-        self.tree_f = ttk.Treeview(f_f, columns=fcols, show="headings", height=18)
+    def _build_failed_tab(self):
+        f = tk.Frame(self.nb, bg="white"); self.nb.add(f, text="⚠️ Hatalı")
+        cols = ("id","attempts","stage","last","err")
+        self.tree_f = ttk.Treeview(f, columns=cols, show="headings", height=20)
         for cid, txt, w in [("id","ID",220),("attempts","Deneme",70),
-                             ("stage","Aşama",140),("last","Son Deneme",150),("err","Hata",400)]:
+                             ("stage","Aşama",140),("last","Son Deneme",150),
+                             ("err","Hata",400)]:
             self.tree_f.heading(cid, text=txt)
             self.tree_f.column(cid, width=w, anchor="w")
         self.tree_f.pack(fill="both", expand=True, padx=10, pady=10)
 
-    # ---- STATUS BAR ----
     def _build_statusbar(self):
         self.sb = tk.Label(self, text="", anchor="w", bg="#ecedf0",
                            padx=10, pady=4, font=("SF Pro Display", 11))
         self.sb.pack(fill="x", side="bottom")
 
     # ---- ACTIONS ----
-    def on_start(self):
-        ok, msg = start_daemon()
-        self._toast(msg, success=ok)
+    def _toast(self, msg, success=True):
+        self.sb.config(text=("✅ " if success else "⚠️ ") + msg)
+
+    def on_source_start(self, src):
+        set_source_enabled(src, True)
+        # Daemon yoksa başlat (otomatik)
+        if not is_running():
+            ok, msg = start_daemon()
+            if not ok:
+                self._toast(msg, success=False); return
+        name = "Amazon" if src=="strapi" else "Walmart"
+        self._toast(f"{name} kaynağı aktif edildi", success=True)
         self.refresh()
-    def on_stop(self):
-        ok, msg = stop_daemon()
-        self._toast(msg, success=ok)
+
+    def on_source_stop(self, src):
+        set_source_enabled(src, False)
+        name = "Amazon" if src=="strapi" else "Walmart"
+        # If BOTH disabled, kill daemon to save resources
+        state = load_state()
+        any_enabled = any(state.get("sources",{}).get(k,{}).get("enabled", True)
+                          for k in ("strapi","walmart"))
+        if not any_enabled:
+            stop_daemon()
+            self._toast(f"{name} durduruldu. Tüm kaynaklar kapalı — daemon da kapatıldı.", success=True)
+        else:
+            self._toast(f"{name} kaynağı durduruldu", success=True)
         self.refresh()
-    def on_refresh(self):
-        ok, msg = force_refresh()
-        self._toast(msg, success=ok)
+
+    def on_strapi_refresh(self):
+        ok, msg = force_refresh(); self._toast(msg, success=ok)
+
+    def on_walmart_now(self):
+        """Trigger one Walmart slot run immediately (dry to test)."""
+        self._toast("Walmart slot manuel tetiklendi (log'a bak)", success=True)
+        def _run():
+            try:
+                subprocess.run([sys.executable, "-c",
+                    f"import sys; sys.path.insert(0,'{BASE}'); import dealbot; "
+                    f"dealbot.run_walmart_slot(dealbot.load_state(), dry=False)"],
+                    cwd=BASE, timeout=300)
+            except Exception as e:
+                self.after(0, lambda: self._toast(f"WM slot err: {e}", success=False))
+        threading.Thread(target=_run, daemon=True).start()
 
     def on_update(self):
-        """Tam güncelleme: git pull + bağımlılıkları kontrol et + daemon restart.
-        Yeni Python kütüphaneleri (Playwright vb.) varsa otomatik kurar."""
         if not messagebox.askyesno(
             "Güncelle",
             "GitHub'dan son sürümü çekiyorum, yeni bağımlılıkları kuruyorum (gerekirse), botu yeniden başlatıyorum.\n\nBu işlem 1-3 dk sürebilir (ilk kurulumda 5+ dk).\n\nDevam?",
             parent=self,
-        ):
-            return
+        ): return
         self.btn_update.config(state="disabled")
         self._toast("Güncelleniyor...", success=True)
         def _run():
             try:
-                # 1) git pull
                 self.after(0, lambda: self._toast("1/3 Kod indiriliyor...", success=True))
-                proc = subprocess.run(
-                    ["git", "-C", BASE, "pull", "--ff-only"],
-                    capture_output=True, text=True, timeout=60,
-                )
+                proc = subprocess.run(["git", "-C", BASE, "pull", "--ff-only"],
+                                       capture_output=True, text=True, timeout=60)
                 out = (proc.stdout + proc.stderr).strip()
                 if proc.returncode != 0:
                     self.after(0, lambda: self._toast(f"Pull hatası: {out[:120]}", success=False))
-                    self.after(0, lambda: self.btn_update.config(state="normal"))
-                    return
-                # 2) install_on_new_mac.sh çalıştır (idempotent — sadece eksikleri kurar)
+                    self.after(0, lambda: self.btn_update.config(state="normal")); return
                 self.after(0, lambda: self._toast("2/3 Bağımlılıklar kontrol ediliyor...", success=True))
                 installer = f"{BASE}/install_on_new_mac.sh"
                 if os.path.exists(installer):
-                    subprocess.run(
-                        ["bash", installer],
-                        capture_output=True, text=True, timeout=600,
-                    )
-                # 3) Daemon restart
+                    subprocess.run(["bash", installer], capture_output=True, text=True, timeout=600)
                 self.after(0, lambda: self._toast("3/3 Bot yeniden başlatılıyor...", success=True))
-                stop_daemon()
-                time.sleep(1)
-                start_daemon()
+                stop_daemon(); time.sleep(1); start_daemon()
                 msg = "Up to date" if "up to date" in out.lower() else "✅ Güncellendi + bot yeniden başlatıldı"
                 self.after(0, lambda: self._toast(msg, success=True))
             except Exception as e:
@@ -272,23 +299,13 @@ class BotDashboard(tk.Tk):
                 self.after(0, self.refresh)
         threading.Thread(target=_run, daemon=True).start()
 
-    def _toast(self, msg, success=True):
-        self.sb.config(text=("✅ " if success else "⚠️ ") + msg)
-
-    # ---- LOG TEMİZLE ----
     def _clear_log(self):
-        """Tüm log dosyasını sıfırlar (kullanıcı butona basınca)."""
-        if not messagebox.askyesno(
-            "Log Temizle",
-            "Tüm log geçmişi silinecek. Emin misin?",
-            parent=self,
-        ):
-            return
+        if not messagebox.askyesno("Log Temizle","Tüm log geçmişi silinecek. Emin misin?",
+                                     parent=self): return
         try:
             with open(LOG, "w") as f:
                 f.write(f"[{datetime.now().isoformat(timespec='seconds')}] [log cleared by panel]\n")
-            self.log_text.config(state="normal")
-            self.log_text.delete("1.0", "end")
+            self.log_text.config(state="normal"); self.log_text.delete("1.0","end")
             self.log_text.config(state="disabled")
             self._toast("Log temizlendi", success=True)
         except Exception as e:
@@ -297,109 +314,91 @@ class BotDashboard(tk.Tk):
     # ---- DATA REFRESH ----
     def _auto_refresh(self):
         try: self.refresh()
-        except Exception as e:
-            self.sb.config(text=f"refresh err: {e}")
+        except Exception as e: self.sb.config(text=f"refresh err: {e}")
         self.after(5000, self._auto_refresh)
 
-    def _post_source(self, entry):
+    def _source_of(self, entry):
         if entry.get("source") == "walmart": return "walmart"
-        pid = entry.get("id") or ""
-        if pid.startswith("wp:"): return "walmart"
+        if (entry.get("id") or "").startswith("wp:"): return "walmart"
         return "strapi"
 
     def refresh(self):
         state = load_state()
-        queue = load_queue()
         pid   = is_running()
         posted_all = state.get("posted", [])
         now = datetime.now()
-        src_filter = self.source_var.get() if hasattr(self,'source_var') else "all"
 
-        # Header status
+        # ---- Global daemon status ----
         if pid:
-            self.status_label.config(text=f"🟢 ÇALIŞIYOR  PID {pid}", fg="#2e7d32")
-            self.btn_start.config(state="disabled"); self.btn_stop.config(state="normal")
+            self.daemon_label.config(text=f"🟢 Daemon: PID {pid}", fg="#2e7d32")
         else:
-            self.status_label.config(text="🔴 DURMUŞ", fg="#d32f2f")
-            self.btn_start.config(state="normal"); self.btn_stop.config(state="disabled")
+            self.daemon_label.config(text="🔴 Daemon: durmuş", fg="#d32f2f")
 
-        def in_src(e):
-            return src_filter == "all" or self._post_source(e) == src_filter
-        posted_view = [e for e in posted_all if in_src(e)]
+        # ---- Per-source status + metrics ----
+        for src, src_name in [("strapi","Amazon"), ("walmart","Walmart")]:
+            enabled = state.get("sources",{}).get(src,{}).get("enabled", True)
+            lbl    = getattr(self, f"{src}_status_lbl")
+            bstart = getattr(self, f"{src}_btn_start")
+            bstop  = getattr(self, f"{src}_btn_stop")
+            cooldown_msg = ""
+            if src == "walmart":
+                cd = state.get("walmart",{}).get("cooldown_until")
+                if cd:
+                    try:
+                        dt = datetime.fromisoformat(cd)
+                        if dt > now:
+                            mins = int((dt - now).total_seconds()/60)
+                            cooldown_msg = f"  ⏸️ Cooldown {mins}m"
+                    except Exception: pass
+            if enabled and pid:
+                lbl.config(text=f"🟢 {src_name} aktif{cooldown_msg}", fg="#2e7d32")
+                bstart.config(state="disabled"); bstop.config(state="normal")
+            elif enabled and not pid:
+                lbl.config(text=f"🟡 {src_name} aktif ama daemon kapalı{cooldown_msg}", fg="#a16207")
+                bstart.config(state="normal"); bstop.config(state="disabled")
+            else:
+                lbl.config(text=f"🔴 {src_name} durduruldu{cooldown_msg}", fg="#d32f2f")
+                bstart.config(state="normal"); bstop.config(state="disabled")
 
-        # Metrics (source-filtered)
-        today = sum(1 for e in posted_view if (d := parse_dt(e.get("posted_at"))) and d.date() == now.date())
-        week  = sum(1 for e in posted_view if (d := parse_dt(e.get("posted_at"))) and (now - d) < timedelta(days=7))
-        total = len(posted_view)
-        failed_n = sum(1 for f in state.get("failed", {}).values() if f.get("attempts", 0) >= 3)
-        last_post = max([d for e in posted_view if (d := parse_dt(e.get("posted_at")))] or [None])
+            posted_src = [e for e in posted_all if self._source_of(e) == src]
+            today = sum(1 for e in posted_src if (d := parse_dt(e.get("posted_at"))) and d.date() == now.date())
+            week  = sum(1 for e in posted_src if (d := parse_dt(e.get("posted_at"))) and (now - d) < timedelta(days=7))
+            total = len(posted_src)
+            last_post = max([d for e in posted_src if (d := parse_dt(e.get("posted_at")))] or [None])
+            interval_min = 10 if src == "strapi" else 60
+            next_post = "—"
+            if pid and enabled and last_post:
+                next_at = last_post + timedelta(minutes=interval_min)
+                secs = (next_at - now).total_seconds()
+                next_post = f"{int(secs//60)}m {int(secs%60)}s" if secs > 0 else "şimdi"
+            mw = getattr(self, f"{src}_metrics")
+            for k, v in [("today",today),("week",week),("total",total),("next",next_post)]:
+                mw[k].config(text=str(v))
 
-        # Queue (Strapi only — Walmart pulled on-demand)
-        posted_ids = {e.get("id") for e in posted_all}
-        queue_strapi = [p for p in queue if p.get("id") not in posted_ids]
-        if src_filter == "walmart":
-            queue_visible = []
-        else:
-            queue_visible = queue_strapi
-        qcount = len(queue_visible)
-
-        next_post = "—"
-        if pid and last_post:
-            next_at = last_post + timedelta(minutes=10)
-            secs = (next_at - now).total_seconds()
-            next_post = f"{int(secs//60)}m {int(secs%60)}s" if secs > 0 else "şimdi"
-
-        for k, v in [("today",today),("week",week),("total",total),
-                     ("queue",qcount),("failed",failed_n),("next",next_post)]:
-            self.metric_widgets[k].config(text=str(v))
-
-        # Queue tree (Strapi only — Walmart kuyruğu pre-fetched değil)
-        self.tree_q.delete(*self.tree_q.get_children())
-        for p in queue_visible[:50]:
-            try:
-                self.tree_q.insert("", "end", values=(
-                    "📦 Amazon",
-                    f"%{p.get('disc')}",
-                    (p.get("title") or "")[:65],
-                    f"{p.get('reg'):.2f} → {p.get('sale'):.2f}",
-                    p.get("code") or "—",
+            # Recent posts for this source
+            tree = getattr(self, f"{src}_tree")
+            tree.delete(*tree.get_children())
+            for e in sorted(posted_src, key=lambda x: x.get("posted_at",""), reverse=True)[:60]:
+                d = parse_dt(e.get("posted_at"))
+                tree.insert("", "end", values=(
+                    d.strftime("%d.%m %H:%M") if d else "?",
+                    (e.get("id") or "")[:30],
+                    (e.get("title_key") or "")[:80],
+                    e.get("msg_id") or "",
                 ))
-            except Exception: pass
-        if src_filter == "walmart":
-            self.tree_q.insert("", "end", values=(
-                "🛒 Walmart","ℹ️","Walmart kuyruğu on-demand çekiliyor (her saat :30'da)","",""))
 
-        # Log
-        try:
-            tail = open(LOG).read().splitlines()[-150:]
-        except Exception:
-            tail = []
-        self.log_text.config(state="normal")
-        self.log_text.delete("1.0", "end")
+        # ---- Log ----
+        try: tail = open(LOG).read().splitlines()[-200:]
+        except Exception: tail = []
+        self.log_text.config(state="normal"); self.log_text.delete("1.0","end")
         for line in tail:
             tag = None
-            for key in ("SENT","FAIL","SKIP","DAEMON","refresh"):
+            for key in ("SENT","FAIL","SKIP","DAEMON","WM","refresh"):
                 if key in line: tag = key; break
             self.log_text.insert("end", line + "\n", tag)
-        self.log_text.see("end")
-        self.log_text.config(state="disabled")
+        self.log_text.see("end"); self.log_text.config(state="disabled")
 
-        # Recent posts (source-filtered)
-        self.tree_r.delete(*self.tree_r.get_children())
-        for e in sorted(posted_view, key=lambda x: x.get("posted_at",""), reverse=True)[:50]:
-            d = parse_dt(e.get("posted_at"))
-            src = self._post_source(e)
-            src_label = "🛒 Walmart" if src == "walmart" else "📦 Amazon"
-            self.tree_r.insert("", "end", values=(
-                d.strftime("%d.%m %H:%M") if d else "?",
-                src_label,
-                (e.get("id") or "")[:24],
-                e.get("asin") or "—",
-                (e.get("title_key") or "")[:60],
-                e.get("msg_id") or "",
-            ))
-
-        # Failed
+        # ---- Failed ----
         self.tree_f.delete(*self.tree_f.get_children())
         for pid_, info in state.get("failed", {}).items():
             self.tree_f.insert("", "end", values=(
@@ -407,10 +406,10 @@ class BotDashboard(tk.Tk):
                 info.get("last_try",""), (info.get("error") or "")[:90],
             ))
 
-        # status bar
         lr = state.get("last_refresh", 0)
         lr_str = datetime.fromtimestamp(lr).strftime('%H:%M:%S') if lr else "yok"
         self.sb.config(text=f"Strapi son refresh: {lr_str}  •  Şu an: {now.strftime('%H:%M:%S')}")
+
 
 if __name__ == "__main__":
     app = BotDashboard()
