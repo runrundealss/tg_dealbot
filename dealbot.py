@@ -537,9 +537,12 @@ def main():
         refresh_products(state, force=True)
 
     sched = _cfg.get('schedule', {})
-    strapi_min  = int(sched.get('strapi_minute', 0))
-    walmart_min = int(sched.get('walmart_minute', 30))
-    log(f"DAEMON START — schedule: Strapi @:{strapi_min:02d}, Walmart @:{walmart_min:02d} | dry={dry}")
+    strapi_min     = int(sched.get('strapi_minute', 0))
+    strapi_cadence = int(sched.get('strapi_cadence_min', 30))
+    walmart_min     = int(sched.get('walmart_minute', 15))
+    walmart_cadence = int(sched.get('walmart_cadence_min', 30))
+    log(f"DAEMON START — Strapi every {strapi_cadence}m @:{strapi_min:02d}, "
+        f"Walmart every {walmart_cadence}m @:{walmart_min:02d} | dry={dry}")
 
     last_slot = None  # ('strapi'|'walmart', minute_of_hour) — debounce
     while True:
@@ -553,8 +556,8 @@ def main():
         strapi_enabled  = state_snap.get('sources',{}).get('strapi',  {}).get('enabled', True)
         walmart_enabled = state_snap.get('sources',{}).get('walmart', {}).get('enabled', True)
 
-        # ---- Strapi slot (current cadence: 10 min) ----
-        if last_slot != ('strapi', m) and (m - strapi_min) % 10 == 0 and strapi_enabled:
+        # ---- Strapi slot (configurable cadence) ----
+        if last_slot != ('strapi', m) and (m - strapi_min) % strapi_cadence == 0 and strapi_enabled:
             refresh_products(state)
             try:
                 products = json.load(open(PRODUCTS_PATH))
@@ -571,15 +574,16 @@ def main():
             except Exception as e:
                 log(f"strapi slot err: {e}")
 
-        # ---- Walmart slot (hourly at walmart_min) ----
-        if last_slot != ('walmart', m) and m == walmart_min and walmart_enabled:
+        # ---- Walmart slot (configurable cadence) ----
+        is_wm_slot = last_slot != ('walmart', m) and (m - walmart_min) % walmart_cadence == 0
+        if is_wm_slot and walmart_enabled:
             if is_walmart_cooldown(state):
                 log(f"WM: cooldown active until {state['walmart']['cooldown_until']}")
             else:
                 log(f"--- Walmart slot @ :{m:02d} ---")
                 run_walmart_slot(state, dry=dry)
                 last_slot = ('walmart', m)
-        elif m == walmart_min and not walmart_enabled and last_slot != ('walmart', m):
+        elif is_wm_slot and not walmart_enabled:
             log("WM: kaynak panel'den kapatılmış, slot atlandı")
             last_slot = ('walmart', m)
 

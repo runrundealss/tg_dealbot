@@ -118,26 +118,32 @@ def extract_us_item_id(walmart_url):
 
 def fetch_walmart_detail(us_item_id):
     """Step 6-10. Uses curl_cffi with rotating browser impersonations + UA.
-    Walmart fingerprints urllib's TLS handshake; curl_cffi mimics real Chrome/Safari.
+    Retries with different impersonation if blocked on first attempt.
     Returns (html, next_data, product, blocked_flag)."""
     import random
     try:
         from curl_cffi import requests as cffi_requests
     except ImportError:
-        # Fallback to subprocess curl if curl_cffi missing
         return _fetch_via_curl(us_item_id)
 
-    imp = random.choice(WORKING_IMPERSONATES)
-    ua  = random.choice(UA_ROTATION)
     url = f"https://www.walmart.com/ip/{us_item_id}"
-    try:
-        r = cffi_requests.get(url, impersonate=imp,
-                              headers={"User-Agent": ua,
-                                       "Accept-Language": "en-US,en;q=0.9"},
-                              timeout=30)
-        html = r.text
-    except Exception as e:
-        return f"err: {e}", None, None, True
+    impersonations = random.sample(WORKING_IMPERSONATES, len(WORKING_IMPERSONATES))
+    html = ""
+    for attempt, imp in enumerate(impersonations):
+        ua = random.choice(UA_ROTATION)
+        try:
+            r = cffi_requests.get(url, impersonate=imp,
+                                  headers={"User-Agent": ua,
+                                           "Accept-Language": "en-US,en;q=0.9"},
+                                  timeout=30)
+            html = r.text
+        except Exception as e:
+            html = f"err: {e}"
+            continue
+        if len(html) >= 50_000 and '__NEXT_DATA__' in html:
+            break  # success
+        # blocked — wait 5-10s, try next impersonation
+        time.sleep(random.uniform(5, 10))
     if len(html) < 50_000 or '__NEXT_DATA__' not in html:
         return html, None, None, True
     m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
@@ -296,9 +302,9 @@ def run_one(cfg, token, channel, state, posted_hashes, log_fn):
             log_fn(f"[step5] {post_uid} skip: no usItemId in {ctx['walmart_url'][:80]}")
             continue
 
-        # Step 6-10  (rate-limit: random 2-5s between Walmart fetches)
+        # Step 6-10  (rate-limit: random 10-20s between Walmart fetches)
         import random
-        time.sleep(random.uniform(2, 5))
+        time.sleep(random.uniform(10, 20))
         try:
             html, nd, prod, blocked = fetch_walmart_detail(ctx['us_item_id'])
             ctx['walmart_html'] = html

@@ -25,6 +25,8 @@
 
   "schedule": {
     "strapi_minute": 0,
-    "walmart_minute": 30
+    "strapi_cadence_min": 30,
+    "walmart_minute": 15,
+    "walmart_cadence_min": 30
   }
 }
