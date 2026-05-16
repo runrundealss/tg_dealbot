@@ -84,8 +84,14 @@ merged = merge(cur, ex)
 # Always overwrite these auto-discovered values
 merged["strapi_url"] = "https://rundealsmobile.herokuapp.com/urunlers"
 merged["token_path"] = "$TOKEN_FILE"
+# FORCE schedule from example — eski değerleri override et (önemli ayarlar için)
+merged.setdefault("schedule", {})
+merged["schedule"]["walmart_cadence_min"] = ex["schedule"]["walmart_cadence_min"]
+merged["schedule"]["walmart_minute"] = ex["schedule"]["walmart_minute"]
+merged["schedule"]["strapi_cadence_min"] = ex["schedule"].get("strapi_cadence_min", 10)
+merged["schedule"]["strapi_minute"] = ex["schedule"].get("strapi_minute", 0)
 json.dump(merged, open(cfg_path,"w"), indent=2)
-print(f"   config.json hazır — admin_chat_id={merged.get('admin_chat_id')}")
+print(f"   config.json hazır — walmart cadence={merged['schedule']['walmart_cadence_min']}dk")
 PYEOF
 
 # ---- 6) Bot token ----

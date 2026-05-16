@@ -432,9 +432,9 @@ def process_one(product, state, dry_run=False):
 
 # ---------- Walmart pipeline integration ----------
 
-def run_walmart_slot(state, dry=False):
-    """One Walmart slot: pick first eligible savings101 deal, validate, post.
-       Triggered on schedule.walmart_minute (default :30 of every hour)."""
+def run_walmart_slot(state, dry=False, force=False):
+    """One Walmart slot. HARD rate-limit guard: cadence içinde 2. fire'ı reddeder.
+       force=True manuel/test için bypass (ama yine cadence/3 saatlik koruma)."""
     try:
         from sources import walmart as wm
         import notify
@@ -443,6 +443,18 @@ def run_walmart_slot(state, dry=False):
         return
     if not _cfg.get('walmart',{}).get('enabled'):
         return
+    # HARD rate-limit guard — nereden tetiklenirse tetiklensin (daemon, manual, subprocess)
+    cadence = int(_cfg.get('schedule',{}).get('walmart_cadence_min', 120))
+    min_gap = cadence - 10 if not force else max(30, cadence // 4)  # force = min 30dk veya cadence/4
+    last_fire = state.get('walmart',{}).get('last_fire_at')
+    if last_fire:
+        try:
+            from datetime import datetime as _dt
+            elapsed_min = (_dt.now() - _dt.fromisoformat(last_fire)).total_seconds() / 60
+            if elapsed_min < min_gap:
+                log(f"WM REFUSED — son fire'dan sadece {int(elapsed_min)}dk geçti (min {min_gap}dk). force={force}")
+                return
+        except Exception: pass
     posted_hashes = set(state.get('hashes',{}).values())
     status, ready, _ = wm.run_one(_cfg, TOKEN, CHANNEL, state, posted_hashes, log)
     if status == 'BLOCKED':
@@ -503,7 +515,11 @@ def run_walmart_slot(state, dry=False):
         'source': 'walmart',
     })
     state['hashes'][ready['post_uid']] = ready['hash']
-    state.setdefault('walmart',{})['consecutive_fail'] = 0
+    wm_st = state.setdefault('walmart',{})
+    wm_st['consecutive_fail'] = 0
+    # KRİTİK: last_fire_at burada güncellenir — manuel veya daemon fark etmez
+    wm_st['last_fire_at'] = datetime.now().isoformat(timespec='seconds')
+    wm_st.pop('next_fire_at', None)  # daemon yeni jittered slot hesaplasın
     save_state(state)
 
 

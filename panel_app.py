@@ -292,7 +292,7 @@ class BotDashboard(tk.Tk):
                 proc = subprocess.run(
                     [sys.executable, "-c",
                      f"import sys; sys.path.insert(0,'{BASE}'); import dealbot; "
-                     f"dealbot.run_walmart_slot(dealbot.load_state(), dry=False)"],
+                     f"dealbot.run_walmart_slot(dealbot.load_state(), dry=False, force=True)"],
                     cwd=BASE, env=env, timeout=300,
                     capture_output=True, text=True,
                 )
