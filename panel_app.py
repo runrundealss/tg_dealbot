@@ -139,15 +139,25 @@ class BotDashboard(tk.Tk):
 
     # ---- TABS ----
     def _build_tabs(self):
+        # Source filter bar
+        sf = tk.Frame(self, bg="#f5f5f7", padx=16, pady=4)
+        sf.pack(fill="x")
+        tk.Label(sf, text="Kaynak:", bg="#f5f5f7",
+                 font=("SF Pro Display", 11, "bold")).pack(side="left", padx=(0,8))
+        self.source_var = tk.StringVar(value="all")
+        for txt, val in [("📊 Hepsi","all"),("📦 Amazon","strapi"),("🛒 Walmart","walmart")]:
+            ttk.Radiobutton(sf, text=txt, value=val, variable=self.source_var,
+                            command=self.refresh).pack(side="left", padx=4)
+
         nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=16, pady=12)
+        nb.pack(fill="both", expand=True, padx=16, pady=(4,12))
 
         # Queue tab
         f_q = tk.Frame(nb, bg="white")
         nb.add(f_q, text="📋 Kuyruk")
-        cols = ("disc","title","prices","code")
+        cols = ("src","disc","title","prices","code")
         self.tree_q = ttk.Treeview(f_q, columns=cols, show="headings", height=18)
-        for cid, txt, w in [("disc","%",60),("title","Ürün",460),
+        for cid, txt, w in [("src","Kaynak",80),("disc","%",60),("title","Ürün",420),
                             ("prices","Was → Now",160),("code","Kod",140)]:
             self.tree_q.heading(cid, text=txt)
             self.tree_q.column(cid, width=w, anchor="w")
@@ -178,10 +188,10 @@ class BotDashboard(tk.Tk):
         # Recent posts
         f_r = tk.Frame(nb, bg="white")
         nb.add(f_r, text="📰 Son Postlar")
-        rcols = ("time","id","asin","title","msg")
+        rcols = ("time","src","id","asin","title","msg")
         self.tree_r = ttk.Treeview(f_r, columns=rcols, show="headings", height=18)
-        for cid, txt, w in [("time","Saat",110),("id","Strapi ID",220),
-                             ("asin","ASIN",100),("title","Başlık",420),("msg","msg_id",80)]:
+        for cid, txt, w in [("time","Saat",110),("src","Kaynak",80),("id","ID",200),
+                             ("asin","ASIN",100),("title","Başlık",380),("msg","msg_id",80)]:
             self.tree_r.heading(cid, text=txt)
             self.tree_r.column(cid, width=w, anchor="w")
         self.tree_r.pack(fill="both", expand=True, padx=10, pady=10)
@@ -280,12 +290,19 @@ class BotDashboard(tk.Tk):
             self.sb.config(text=f"refresh err: {e}")
         self.after(5000, self._auto_refresh)
 
+    def _post_source(self, entry):
+        if entry.get("source") == "walmart": return "walmart"
+        pid = entry.get("id") or ""
+        if pid.startswith("wp:"): return "walmart"
+        return "strapi"
+
     def refresh(self):
         state = load_state()
         queue = load_queue()
         pid   = is_running()
         posted_all = state.get("posted", [])
         now = datetime.now()
+        src_filter = self.source_var.get() if hasattr(self,'source_var') else "all"
 
         # Header status
         if pid:
@@ -295,16 +312,24 @@ class BotDashboard(tk.Tk):
             self.status_label.config(text="🔴 DURMUŞ", fg="#d32f2f")
             self.btn_start.config(state="normal"); self.btn_stop.config(state="disabled")
 
-        # Metrics
-        today = sum(1 for e in posted_all if (d := parse_dt(e.get("posted_at"))) and d.date() == now.date())
-        week  = sum(1 for e in posted_all if (d := parse_dt(e.get("posted_at"))) and (now - d) < timedelta(days=7))
-        total = len(posted_all)
-        failed_n = sum(1 for f in state.get("failed", {}).values() if f.get("attempts", 0) >= 3)
-        last_post = max([d for e in posted_all if (d := parse_dt(e.get("posted_at")))] or [None])
+        def in_src(e):
+            return src_filter == "all" or self._post_source(e) == src_filter
+        posted_view = [e for e in posted_all if in_src(e)]
 
-        # filter queue: not in posted ids
+        # Metrics (source-filtered)
+        today = sum(1 for e in posted_view if (d := parse_dt(e.get("posted_at"))) and d.date() == now.date())
+        week  = sum(1 for e in posted_view if (d := parse_dt(e.get("posted_at"))) and (now - d) < timedelta(days=7))
+        total = len(posted_view)
+        failed_n = sum(1 for f in state.get("failed", {}).values() if f.get("attempts", 0) >= 3)
+        last_post = max([d for e in posted_view if (d := parse_dt(e.get("posted_at")))] or [None])
+
+        # Queue (Strapi only — Walmart pulled on-demand)
         posted_ids = {e.get("id") for e in posted_all}
-        queue_visible = [p for p in queue if p.get("id") not in posted_ids]
+        queue_strapi = [p for p in queue if p.get("id") not in posted_ids]
+        if src_filter == "walmart":
+            queue_visible = []
+        else:
+            queue_visible = queue_strapi
         qcount = len(queue_visible)
 
         next_post = "—"
@@ -317,17 +342,21 @@ class BotDashboard(tk.Tk):
                      ("queue",qcount),("failed",failed_n),("next",next_post)]:
             self.metric_widgets[k].config(text=str(v))
 
-        # Queue tree
+        # Queue tree (Strapi only — Walmart kuyruğu pre-fetched değil)
         self.tree_q.delete(*self.tree_q.get_children())
         for p in queue_visible[:50]:
             try:
                 self.tree_q.insert("", "end", values=(
+                    "📦 Amazon",
                     f"%{p.get('disc')}",
                     (p.get("title") or "")[:65],
                     f"{p.get('reg'):.2f} → {p.get('sale'):.2f}",
                     p.get("code") or "—",
                 ))
             except Exception: pass
+        if src_filter == "walmart":
+            self.tree_q.insert("", "end", values=(
+                "🛒 Walmart","ℹ️","Walmart kuyruğu on-demand çekiliyor (her saat :30'da)","",""))
 
         # Log
         try:
@@ -344,12 +373,15 @@ class BotDashboard(tk.Tk):
         self.log_text.see("end")
         self.log_text.config(state="disabled")
 
-        # Recent posts
+        # Recent posts (source-filtered)
         self.tree_r.delete(*self.tree_r.get_children())
-        for e in sorted(posted_all, key=lambda x: x.get("posted_at",""), reverse=True)[:50]:
+        for e in sorted(posted_view, key=lambda x: x.get("posted_at",""), reverse=True)[:50]:
             d = parse_dt(e.get("posted_at"))
+            src = self._post_source(e)
+            src_label = "🛒 Walmart" if src == "walmart" else "📦 Amazon"
             self.tree_r.insert("", "end", values=(
                 d.strftime("%d.%m %H:%M") if d else "?",
+                src_label,
                 (e.get("id") or "")[:24],
                 e.get("asin") or "—",
                 (e.get("title_key") or "")[:60],
