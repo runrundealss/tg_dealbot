@@ -2,7 +2,7 @@
   "channel": "@RunRunDeals",
   "aff_tag": "begum0a-20",
   "strapi_url": "PLEASE_SET_YOUR_STRAPI_URL",
-  "token_path": "~/Downloads/untitled text 5.txt",
+  "token_path": "~/tg_dealbot/.token",
   "min_discount": 20,
   "post_interval_sec": 600,
   "refresh_interval_sec": 3600,

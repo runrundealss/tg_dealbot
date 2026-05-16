@@ -72,7 +72,7 @@ def parse_dt(s):
 class BotDashboard(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("🛒 RunRunDeals Bot")
+        self.title("🛒 Run Run Deals Telegram Bot")
         self.geometry("1080x780")
         self.minsize(900, 600)
         self.configure(bg="#f5f5f7")
@@ -94,11 +94,11 @@ class BotDashboard(tk.Tk):
         bar = tk.Frame(self, bg="#f5f5f7", padx=16, pady=12)
         bar.pack(fill="x", side="top")
 
-        tk.Label(bar, text="🛒 RunRunDeals Bot",
+        tk.Label(bar, text="🛒 Run Run Deals Telegram Bot",
                  font=("SF Pro Display", 22, "bold"),
                  bg="#f5f5f7").pack(side="left")
 
-        self.status_label = tk.Label(bar, text="🔴 Durmuş",
+        self.status_label = tk.Label(bar, text="🔴 TELEGRAM",
                                      font=("SF Pro Display", 12, "bold"),
                                      bg="#f5f5f7", fg="#d32f2f", padx=18)
         self.status_label.pack(side="left", padx=12)
