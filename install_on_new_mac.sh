@@ -65,19 +65,27 @@ mkdir -p /tmp/fonts
 curl -sL -o /tmp/fonts/Bangers-Regular.ttf \
   "https://github.com/google/fonts/raw/main/ofl/bangers/Bangers-Regular.ttf"
 
-# ---- 5) config.json ----
-echo "==> config.json hazırlanıyor"
-if [ ! -f "$INSTALL_DIR/config.json" ]; then
-  cp "$INSTALL_DIR/config.example.json" "$INSTALL_DIR/config.json"
-fi
+# ---- 5) config.json (merge — yeni anahtarları ekler, eski değerleri korur) ----
+echo "==> config.json güncellenmesi (merge)"
 "$PY" - <<PYEOF
-import json
-p = "$INSTALL_DIR/config.json"
-c = json.load(open(p))
-c["strapi_url"] = "https://rundealsmobile.herokuapp.com/urunlers"
-c["token_path"] = "$TOKEN_FILE"
-json.dump(c, open(p,"w"), indent=2)
-print("   config.json yazıldı")
+import json, os
+ex_path  = "$INSTALL_DIR/config.example.json"
+cfg_path = "$INSTALL_DIR/config.json"
+ex  = json.load(open(ex_path))
+cur = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}
+def merge(tgt, src):
+    for k, v in src.items():
+        if k not in tgt:
+            tgt[k] = v
+        elif isinstance(v, dict) and isinstance(tgt.get(k), dict):
+            merge(tgt[k], v)
+    return tgt
+merged = merge(cur, ex)
+# Always overwrite these auto-discovered values
+merged["strapi_url"] = "https://rundealsmobile.herokuapp.com/urunlers"
+merged["token_path"] = "$TOKEN_FILE"
+json.dump(merged, open(cfg_path,"w"), indent=2)
+print(f"   config.json hazır — admin_chat_id={merged.get('admin_chat_id')}")
 PYEOF
 
 # ---- 6) Bot token ----
