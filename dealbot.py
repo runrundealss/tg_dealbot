@@ -504,6 +504,19 @@ def main():
     once = "--once" in args
     refresh_now = "--refresh" in args
 
+    # Hook: any uncaught exception → log full traceback + admin alert
+    def _excepthook(exc_type, exc_value, exc_tb):
+        import traceback
+        tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        log(f"UNCAUGHT EXCEPTION:\n{tb}")
+        try:
+            import notify
+            notify.critical(TOKEN, _cfg.get('admin_chat_id'),
+                f"💥 Beklenmedik hata: {exc_type.__name__}: {str(exc_value)[:200]}",
+                _cfg.get('alert_throttle_per_hour', 5))
+        except Exception: pass
+    sys.excepthook = _excepthook
+
     state = load_state()
     if refresh_now or not os.path.exists(PRODUCTS_PATH):
         refresh_products(state, force=True)
@@ -515,6 +528,7 @@ def main():
 
     last_slot = None  # ('strapi'|'walmart', minute_of_hour) — debounce
     while True:
+      try:
         check_for_update()
         prune_state(state)
         now = datetime.now()
@@ -561,6 +575,17 @@ def main():
         # Sleep until next minute boundary
         sleep_secs = 60 - now.second
         time.sleep(max(15, sleep_secs))
+      except Exception as _loop_err:
+        import traceback
+        tb = traceback.format_exc()
+        log(f"LOOP ERROR (recovered): {_loop_err}\n{tb}")
+        try:
+            import notify
+            notify.critical(TOKEN, _cfg.get('admin_chat_id'),
+                f"⚠️ Loop iterasyonunda hata (daemon devam ediyor): {_loop_err}",
+                _cfg.get('alert_throttle_per_hour', 5))
+        except Exception: pass
+        time.sleep(30)  # back off briefly before retrying
 
 
 if __name__ == "__main__":

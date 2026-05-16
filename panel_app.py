@@ -197,6 +197,9 @@ class BotDashboard(tk.Tk):
         tk.Button(bar, text="🗑  Log Temizle", command=self._clear_log,
                   bg="#dc2626", fg="white", relief="flat", padx=14, pady=6,
                   font=("SF Pro Text", 12, "bold")).pack(side="right")
+        tk.Button(bar, text="📤  Telegram'a Gönder", command=self._send_log_telegram,
+                  bg="#2563eb", fg="white", relief="flat", padx=14, pady=6,
+                  font=("SF Pro Text", 12, "bold")).pack(side="right", padx=(0,8))
         self.log_text = scrolledtext.ScrolledText(
             f, font=("Menlo", 11), bg="#1e1e1e", fg="#d4d4d4",
             insertbackground="white", wrap="word")
@@ -317,6 +320,29 @@ class BotDashboard(tk.Tk):
             return
         # Mevcut instance'ı kapat
         self.after(500, lambda: (self.quit(), os._exit(0)))
+
+    def _send_log_telegram(self):
+        """Logun son 80 satırını admin'in Telegram DM'ine yolla."""
+        def _run():
+            try:
+                import json as _json
+                cfg = _json.load(open(f"{BASE}/config.json"))
+                chat_id = cfg.get("admin_chat_id")
+                token_path = os.path.expanduser(cfg.get("token_path",""))
+                if not chat_id or not token_path or not os.path.exists(token_path):
+                    self.after(0, lambda: self._toast("admin_chat_id veya token yok", success=False))
+                    return
+                token = open(token_path).read().strip()
+                sys.path.insert(0, BASE)
+                import notify
+                ok = notify.send_full_log(token, chat_id, lines=80)
+                if ok:
+                    self.after(0, lambda: self._toast("✅ Log Telegram'a gönderildi", success=True))
+                else:
+                    self.after(0, lambda: self._toast("Log gönderilemedi", success=False))
+            except Exception as e:
+                self.after(0, lambda: self._toast(f"Hata: {e}", success=False))
+        threading.Thread(target=_run, daemon=True).start()
 
     def _clear_log(self):
         if not messagebox.askyesno("Log Temizle","Tüm log geçmişi silinecek. Emin misin?",
