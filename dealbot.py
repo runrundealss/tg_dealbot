@@ -578,30 +578,42 @@ def main():
             except Exception as e:
                 log(f"strapi slot err: {e}")
 
-        # ---- Walmart slot (jittered — bot detection'a karşı rastgele dakika) ----
-        # Her saat başı 2 rastgele dakika seçilir: AM (:11-:19) ve PM (:41-:49)
+        # ---- Walmart slot (cadence-based — son fire'dan +cadence_min ± 5dk jitter) ----
         import random as _rnd
         wm_state = state.setdefault('walmart', {})
-        cur_hour = now.replace(minute=0, second=0, microsecond=0).isoformat()
-        if wm_state.get('hour') != cur_hour:
-            wm_state['hour'] = cur_hour
-            wm_state['am_minute'] = _rnd.randint(11, 19)
-            wm_state['pm_minute'] = _rnd.randint(41, 49)
+        last_fire_iso = wm_state.get('last_fire_at')
+        if last_fire_iso:
+            last_fire_dt = datetime.fromisoformat(last_fire_iso)
+        else:
+            # İlk fire: bugün :walmart_min'e ayarla (geçtiyse +1 saat)
+            last_fire_dt = now.replace(minute=walmart_min, second=0, microsecond=0) - timedelta(minutes=walmart_cadence)
+        next_fire_iso = wm_state.get('next_fire_at')
+        if not next_fire_iso:
+            jitter = _rnd.randint(-5, 5)
+            next_fire = last_fire_dt + timedelta(minutes=walmart_cadence + jitter)
+            wm_state['next_fire_at'] = next_fire.isoformat()
             save_state(state)
-            log(f"WM: bu saat için jittered slot'lar → AM :{wm_state['am_minute']:02d}, PM :{wm_state['pm_minute']:02d}")
-
-        is_wm_slot = (last_slot != ('walmart', m)
-                       and m in (wm_state['am_minute'], wm_state['pm_minute']))
+            log(f"WM: bir sonraki slot → {next_fire.strftime('%H:%M')} (cadence {walmart_cadence}dk + jitter)")
+        else:
+            next_fire = datetime.fromisoformat(next_fire_iso)
+        is_wm_slot = (last_slot != ('walmart', m) and now >= next_fire)
         if is_wm_slot and walmart_enabled:
             if is_walmart_cooldown(state):
                 log(f"WM: cooldown active until {state['walmart']['cooldown_until']}")
             else:
-                log(f"--- Walmart slot @ :{m:02d} (jittered) ---")
+                log(f"--- Walmart slot @ {now.strftime('%H:%M')} ---")
                 run_walmart_slot(state, dry=dry)
                 last_slot = ('walmart', m)
+                # Mark fired + clear next_fire so loop recomputes
+                wm_state['last_fire_at'] = now.isoformat()
+                wm_state.pop('next_fire_at', None)
+                save_state(state)
         elif is_wm_slot and not walmart_enabled:
             log("WM: kaynak panel'den kapatılmış, slot atlandı")
             last_slot = ('walmart', m)
+            wm_state['last_fire_at'] = now.isoformat()
+            wm_state.pop('next_fire_at', None)
+            save_state(state)
 
         if once:
             log("--once flag set, exiting")
