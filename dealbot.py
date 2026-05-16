@@ -538,9 +538,9 @@ def main():
 
     sched = _cfg.get('schedule', {})
     strapi_min     = int(sched.get('strapi_minute', 0))
-    strapi_cadence = int(sched.get('strapi_cadence_min', 30))
+    strapi_cadence = int(sched.get('strapi_cadence_min', 10))  # Amazon: 10 dk (DEĞİŞMEZ)
     walmart_min     = int(sched.get('walmart_minute', 15))
-    walmart_cadence = int(sched.get('walmart_cadence_min', 30))
+    walmart_cadence = int(sched.get('walmart_cadence_min', 30))  # Walmart: 30 dk @ :15, :45
     log(f"DAEMON START — Strapi every {strapi_cadence}m @:{strapi_min:02d}, "
         f"Walmart every {walmart_cadence}m @:{walmart_min:02d} | dry={dry}")
 
