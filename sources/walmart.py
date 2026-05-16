@@ -117,23 +117,20 @@ def extract_us_item_id(walmart_url):
 
 
 def fetch_walmart_detail(us_item_id):
-    """Step 6-10. Returns (html, next_data, product, blocked_flag).
-    Decodes gzip if needed (Walmart returns gzipped HTML when Accept-Encoding includes gzip)."""
-    req = urllib.request.Request(f"https://www.walmart.com/ip/{us_item_id}", headers=UA_PHONE)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        raw = r.read()
-        enc = r.headers.get('Content-Encoding','').lower()
-    if 'gzip' in enc:
-        import gzip; raw = gzip.decompress(raw)
-    elif 'br' in enc:
-        try:
-            import brotli; raw = brotli.decompress(raw)
-        except ImportError: pass
-    elif 'deflate' in enc:
-        import zlib; raw = zlib.decompress(raw)
-    try: html = raw.decode('utf-8', errors='ignore')
-    except Exception: html = str(raw)
-    # Blocked detection: tiny HTML or no NEXT_DATA → IP rate-limited
+    """Step 6-10. Uses CURL subprocess (Python urllib's TLS fingerprint is fingerprinted by Walmart).
+    Returns (html, next_data, product, blocked_flag)."""
+    url = f"https://www.walmart.com/ip/{us_item_id}"
+    proc = subprocess.run(
+        ["curl", "-sSL", "--compressed", "--max-time", "30",
+         "-A", UA_PHONE["User-Agent"],
+         "-H", f"Accept: {UA_PHONE['Accept']}",
+         "-H", f"Accept-Language: {UA_PHONE['Accept-Language']}",
+         "-H", "Upgrade-Insecure-Requests: 1",
+         url],
+        capture_output=True, text=True, timeout=45,
+    )
+    html = proc.stdout
+    # Blocked detection: tiny HTML or no NEXT_DATA → bot detection
     if len(html) < 50_000 or '__NEXT_DATA__' not in html:
         return html, None, None, True
     m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
