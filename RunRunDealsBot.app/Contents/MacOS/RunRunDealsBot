@@ -1,10 +1,28 @@
 #!/bin/bash
-# RunRunDeals Bot launcher — kullanıcının home klasöründeki tg_dealbot'u açar
+# RunRunDeals Bot launcher — uygun Python'u otomatik bulur
 DIR="$HOME/tg_dealbot"
 if [ ! -d "$DIR" ]; then
   /usr/bin/osascript -e "display alert \"RunRunDeals Bot\" message \"Kurulum bulunamadı: $DIR\"" >/dev/null 2>&1
   exit 1
 fi
 cd "$DIR"
-PY=$(command -v python3.13 || command -v python3 || echo /usr/bin/python3)
-exec "$PY" panel_app.py
+
+# Tkinter destekleyen ilk Python'u kullan
+for PY in \
+  /opt/homebrew/bin/python3.12 \
+  /opt/homebrew/bin/python3.13 \
+  /opt/homebrew/bin/python3.14 \
+  /opt/homebrew/bin/python3 \
+  /Library/Developer/CommandLineTools/usr/bin/python3 \
+  /usr/bin/python3 \
+  "$(command -v python3 2>/dev/null)" ; do
+  [ -x "$PY" ] || continue
+  if "$PY" -c "import tkinter" 2>/dev/null; then
+    # Pillow eksikse otomatik kur
+    "$PY" -c "import PIL" 2>/dev/null || "$PY" -m pip install --user --quiet pillow 2>/dev/null
+    exec "$PY" panel_app.py
+  fi
+done
+
+/usr/bin/osascript -e 'display alert "RunRunDeals Bot" message "Tkinter destekli Python bulunamadı. Terminalde: brew install python@3.12"' >/dev/null 2>&1
+exit 1

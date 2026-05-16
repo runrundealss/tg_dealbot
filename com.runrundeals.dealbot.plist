@@ -7,12 +7,12 @@
   <array>
     <string>/usr/bin/caffeinate</string>
     <string>-i</string>
-    <string>/usr/bin/python3</string>
-    <string>/Users/kaan/tg_dealbot/dealbot.py</string>
+    <string>__PYTHON__</string>
+    <string>__HOME__/tg_dealbot/dealbot.py</string>
   </array>
-  <key>WorkingDirectory</key> <string>/Users/kaan/tg_dealbot</string>
-  <key>StandardOutPath</key>  <string>/Users/kaan/tg_dealbot/dealbot.log</string>
-  <key>StandardErrorPath</key><string>/Users/kaan/tg_dealbot/dealbot.log</string>
+  <key>WorkingDirectory</key> <string>__HOME__/tg_dealbot</string>
+  <key>StandardOutPath</key>  <string>__HOME__/tg_dealbot/dealbot.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/tg_dealbot/dealbot.log</string>
   <key>RunAtLoad</key>        <true/>
   <key>KeepAlive</key>
   <dict>

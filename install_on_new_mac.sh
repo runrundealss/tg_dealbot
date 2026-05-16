@@ -10,10 +10,32 @@ INSTALL_DIR="$HOME/tg_dealbot"
 PLIST_NAME="com.runrundeals.dealbot.plist"
 LAUNCH_DIR="$HOME/Library/LaunchAgents"
 
-echo "==> Python & pip kontrol"
-command -v python3 >/dev/null || { echo "Python3 yok"; exit 1; }
-python3 -m pip install -q --user pillow rumps 2>/dev/null || true
+# ---- 1) Çalışan Python tespit et (tkinter ZORUNLU) ----
+echo "==> Tkinter destekleyen Python aranıyor"
+PY=""
+for P in \
+  /opt/homebrew/bin/python3.12 \
+  /opt/homebrew/bin/python3.13 \
+  /opt/homebrew/bin/python3.14 \
+  /opt/homebrew/bin/python3 \
+  /Library/Developer/CommandLineTools/usr/bin/python3 \
+  /usr/bin/python3 ; do
+  [ -x "$P" ] || continue
+  if "$P" -c "import tkinter" 2>/dev/null; then
+    PY="$P"; break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "❌ Tkinter destekli Python yok. Şu komutu çalıştır: brew install python@3.12"
+  exit 1
+fi
+echo "    -> $PY"
 
+# ---- 2) Bağımlılıklar ----
+echo "==> Bağımlılıklar yükleniyor (pillow + rumps)"
+"$PY" -m pip install --user --quiet pillow rumps 2>/dev/null || true
+
+# ---- 3) Repo clone ----
 echo "==> Repo clone -> $INSTALL_DIR"
 if [ -d "$INSTALL_DIR/.git" ]; then
   cd "$INSTALL_DIR" && git pull --quiet
@@ -22,18 +44,19 @@ else
   cd "$INSTALL_DIR"
 fi
 
-echo "==> Font indir (Bangers)"
+# ---- 4) Font ----
+echo "==> Bangers font indir"
 mkdir -p /tmp/fonts
 curl -sL -o /tmp/fonts/Bangers-Regular.ttf \
   "https://github.com/google/fonts/raw/main/ofl/bangers/Bangers-Regular.ttf"
 
-echo "==> config.json oluştur"
+# ---- 5) config.json ----
+echo "==> config.json hazırlanıyor"
 if [ ! -f "$INSTALL_DIR/config.json" ]; then
   cp "$INSTALL_DIR/config.example.json" "$INSTALL_DIR/config.json"
-  # Otomatik defaultları doldur
-  python3 - <<'PYEOF'
+  "$PY" - <<PYEOF
 import json, os
-p = os.path.expanduser("~/tg_dealbot/config.json")
+p = os.path.expanduser("$INSTALL_DIR/config.json")
 c = json.load(open(p))
 c["strapi_url"] = "https://rundealsmobile.herokuapp.com/urunlers"
 json.dump(c, open(p,"w"), indent=2)
@@ -41,41 +64,41 @@ PYEOF
   echo "    config.json yazıldı"
 fi
 
+# ---- 6) Bot token ----
 echo "==> Bot token"
 TOKEN_FILE="$HOME/Downloads/untitled text 5.txt"
 if [ ! -s "$TOKEN_FILE" ]; then
-  if [ -t 0 ]; then
-    read -p "    Telegram bot token: " TOKEN
-  else
-    # piped run — read from tty if available
-    if [ -e /dev/tty ]; then
-      read -p "    Telegram bot token: " TOKEN < /dev/tty
-    fi
+  if [ -e /dev/tty ]; then
+    read -p "    Telegram bot token: " TOKEN < /dev/tty
   fi
   if [ -n "$TOKEN" ]; then
     echo -n "$TOKEN" > "$TOKEN_FILE"
     echo "    Token kaydedildi: $TOKEN_FILE"
   else
-    echo "    ⚠️  Token girilmedi! Kurulum sonra şu komutla tamamlanır:"
+    echo "    ⚠️  Token girilmedi. Sonra elle koy:"
     echo "       echo -n 'YOUR_TOKEN' > '$TOKEN_FILE'"
   fi
 fi
 
-echo "==> LaunchAgent kur"
+# ---- 7) LaunchAgent (template'ten render et) ----
+echo "==> LaunchAgent kuruluyor (Python=$PY)"
 mkdir -p "$LAUNCH_DIR"
-sed "s|/Users/kaan|$HOME|g" "$INSTALL_DIR/$PLIST_NAME" > "$LAUNCH_DIR/$PLIST_NAME"
+sed -e "s|__PYTHON__|$PY|g" -e "s|__HOME__|$HOME|g" \
+    "$INSTALL_DIR/$PLIST_NAME" > "$LAUNCH_DIR/$PLIST_NAME"
 launchctl unload "$LAUNCH_DIR/$PLIST_NAME" 2>/dev/null || true
 launchctl load -w "$LAUNCH_DIR/$PLIST_NAME"
 
+# ---- 8) .app to /Applications ----
 echo "==> Dashboard .app -> /Applications"
 cp -R "$INSTALL_DIR/RunRunDealsBot.app" /Applications/ 2>/dev/null || true
-# Strip quarantine flag (Gatekeeper engellesin diye değil)
 xattr -dr com.apple.quarantine /Applications/RunRunDealsBot.app 2>/dev/null || true
 
 echo ""
 echo "✅ Kurulum tamam."
-echo "   • Daemon login'de otomatik başlar"
-echo "   • Applications → RunRunDeals Bot (çift tıkla)"
+echo "   Python:  $PY"
+echo "   Repo:    $INSTALL_DIR"
+echo "   Plist:   $LAUNCH_DIR/$PLIST_NAME"
+echo "   App:     /Applications/RunRunDealsBot.app"
 echo ""
-echo "   ⚠️  Auto-login açmak için:"
-echo "       System Settings → Users & Groups → 'Automatically log in as'"
+echo "   Çift tıklayarak aç: Applications → RunRunDeals Bot"
+echo "   ⚠️  Auto-login: System Settings → Users & Groups → 'Automatically log in as'"
