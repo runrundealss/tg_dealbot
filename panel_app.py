@@ -288,16 +288,35 @@ class BotDashboard(tk.Tk):
                 installer = f"{BASE}/install_on_new_mac.sh"
                 if os.path.exists(installer):
                     subprocess.run(["bash", installer], capture_output=True, text=True, timeout=600)
-                self.after(0, lambda: self._toast("3/3 Bot yeniden başlatılıyor...", success=True))
+                self.after(0, lambda: self._toast("3/3 Bot ve panel yeniden başlatılıyor...", success=True))
                 stop_daemon(); time.sleep(1); start_daemon()
-                msg = "Up to date" if "up to date" in out.lower() else "✅ Güncellendi + bot yeniden başlatıldı"
-                self.after(0, lambda: self._toast(msg, success=True))
+                up_to_date = "up to date" in out.lower()
+                if up_to_date:
+                    self.after(0, lambda: self._toast("Up to date — değişiklik yok", success=True))
+                    self.after(0, lambda: self.btn_update.config(state="normal"))
+                    return
+                # Self-relaunch: panel'in kendisini yeniden aç (yeni kod yüklensin)
+                self.after(1500, self._relaunch_panel)
             except Exception as e:
                 self.after(0, lambda: self._toast(f"Güncelleme hatası: {e}", success=False))
-            finally:
                 self.after(0, lambda: self.btn_update.config(state="normal"))
-                self.after(0, self.refresh)
         threading.Thread(target=_run, daemon=True).start()
+
+    def _relaunch_panel(self):
+        """Panel'i tamamen yeniden başlat (yeni Python kodunu yüklemek için)."""
+        try:
+            # /Applications altında .app varsa onu aç (Mac native)
+            app_path = "/Applications/RunRunDealsBot.app"
+            if os.path.exists(app_path):
+                subprocess.Popen(["open", "-n", app_path])
+            else:
+                # Fallback: doğrudan Python script'i tekrar başlat
+                subprocess.Popen([sys.executable, __file__], cwd=BASE)
+        except Exception as e:
+            self._toast(f"Relaunch hatası: {e} — manuel aç-kapa yap", success=False)
+            return
+        # Mevcut instance'ı kapat
+        self.after(500, lambda: (self.quit(), os._exit(0)))
 
     def _clear_log(self):
         if not messagebox.askyesno("Log Temizle","Tüm log geçmişi silinecek. Emin misin?",
