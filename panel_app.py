@@ -227,18 +227,20 @@ class BotDashboard(tk.Tk):
         self._toast(msg, success=ok)
 
     def on_update(self):
-        """git pull → bot restart. Begum'un terminale girmesi gerekmesin diye."""
+        """Tam güncelleme: git pull + bağımlılıkları kontrol et + daemon restart.
+        Yeni Python kütüphaneleri (Playwright vb.) varsa otomatik kurar."""
         if not messagebox.askyesno(
             "Güncelle",
-            "GitHub'dan son sürümü çekip botu yeniden başlatacağım. Devam?",
+            "GitHub'dan son sürümü çekiyorum, yeni bağımlılıkları kuruyorum (gerekirse), botu yeniden başlatıyorum.\n\nBu işlem 1-3 dk sürebilir (ilk kurulumda 5+ dk).\n\nDevam?",
             parent=self,
         ):
             return
         self.btn_update.config(state="disabled")
         self._toast("Güncelleniyor...", success=True)
-        # Thread'de çalıştır UI donmasın
         def _run():
             try:
+                # 1) git pull
+                self.after(0, lambda: self._toast("1/3 Kod indiriliyor...", success=True))
                 proc = subprocess.run(
                     ["git", "-C", BASE, "pull", "--ff-only"],
                     capture_output=True, text=True, timeout=60,
@@ -248,11 +250,20 @@ class BotDashboard(tk.Tk):
                     self.after(0, lambda: self._toast(f"Pull hatası: {out[:120]}", success=False))
                     self.after(0, lambda: self.btn_update.config(state="normal"))
                     return
-                # Pull başarılı → bot restart
+                # 2) install_on_new_mac.sh çalıştır (idempotent — sadece eksikleri kurar)
+                self.after(0, lambda: self._toast("2/3 Bağımlılıklar kontrol ediliyor...", success=True))
+                installer = f"{BASE}/install_on_new_mac.sh"
+                if os.path.exists(installer):
+                    subprocess.run(
+                        ["bash", installer],
+                        capture_output=True, text=True, timeout=600,
+                    )
+                # 3) Daemon restart
+                self.after(0, lambda: self._toast("3/3 Bot yeniden başlatılıyor...", success=True))
                 stop_daemon()
                 time.sleep(1)
                 start_daemon()
-                msg = "Up to date" if "up to date" in out.lower() else "Güncellendi + yeniden başlatıldı"
+                msg = "Up to date" if "up to date" in out.lower() else "✅ Güncellendi + bot yeniden başlatıldı"
                 self.after(0, lambda: self._toast(msg, success=True))
             except Exception as e:
                 self.after(0, lambda: self._toast(f"Güncelleme hatası: {e}", success=False))
