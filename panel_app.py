@@ -258,14 +258,36 @@ class BotDashboard(tk.Tk):
         ok, msg = force_refresh(); self._toast(msg, success=ok)
 
     def on_walmart_now(self):
-        """Trigger one Walmart slot run immediately (dry to test)."""
+        """Trigger one Walmart slot run immediately, bypassing daemon lock + cooldown."""
         self._toast("Walmart slot manuel tetiklendi (log'a bak)", success=True)
         def _run():
             try:
-                subprocess.run([sys.executable, "-c",
-                    f"import sys; sys.path.insert(0,'{BASE}'); import dealbot; "
-                    f"dealbot.run_walmart_slot(dealbot.load_state(), dry=False)"],
-                    cwd=BASE, timeout=300)
+                # Clear cooldown so manual test runs immediately
+                state = load_state()
+                if state.get('walmart',{}).get('cooldown_until'):
+                    del state['walmart']['cooldown_until']
+                    state.setdefault('walmart',{})['consecutive_fail'] = 0
+                    save_state(state)
+                # Run in subprocess with DEALBOT_NO_LOCK=1 so daemon's lock doesn't block us
+                env = os.environ.copy()
+                env["DEALBOT_NO_LOCK"] = "1"
+                proc = subprocess.run(
+                    [sys.executable, "-c",
+                     f"import sys; sys.path.insert(0,'{BASE}'); import dealbot; "
+                     f"dealbot.run_walmart_slot(dealbot.load_state(), dry=False)"],
+                    cwd=BASE, env=env, timeout=300,
+                    capture_output=True, text=True,
+                )
+                # Append output to log so user sees it in panel
+                with open(LOG, "a") as f:
+                    f.write(f"\n--- MANUAL WALMART TEST @ {datetime.now().isoformat(timespec='seconds')} ---\n")
+                    if proc.stdout: f.write(proc.stdout)
+                    if proc.stderr: f.write(f"\n[stderr]\n{proc.stderr}")
+                    f.write("\n--- END MANUAL TEST ---\n")
+                if proc.returncode == 0:
+                    self.after(0, lambda: self._toast("Walmart slot bitti — log'a bak", success=True))
+                else:
+                    self.after(0, lambda: self._toast(f"Walmart slot kod={proc.returncode}", success=False))
             except Exception as e:
                 self.after(0, lambda: self._toast(f"WM slot err: {e}", success=False))
         threading.Thread(target=_run, daemon=True).start()
