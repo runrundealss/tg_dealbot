@@ -456,12 +456,14 @@ def run_walmart_slot(state, dry=False):
         save_state(state)
         return
     if status != 'READY' or not ready:
-        log(f"WM: no eligible candidate this slot")
+        log(f"WM: no eligible candidate this slot (sessiz pas geç)")
         wf = state.setdefault('walmart',{}).setdefault('consecutive_fail', 0)
         state['walmart']['consecutive_fail'] = wf + 1
-        if state['walmart']['consecutive_fail'] >= 5:
+        # 8 slot * ortalama 30dk = 4 saat ardı ardına aday yoksa anormal
+        if state['walmart']['consecutive_fail'] >= 8:
             notify.critical(TOKEN, _cfg.get('admin_chat_id'),
-                f"Walmart {state['walmart']['consecutive_fail']} slot ardı ardına eligible candidate bulamadı.",
+                f"⚠️ Walmart 4+ saat ardı ardına eligible candidate bulamadı.\n"
+                f"savings101 down olabilir veya tüm post'lar zaten paylaşıldı. Kontrol et.",
                 _cfg.get('alert_throttle_per_hour', 5))
             state['walmart']['consecutive_fail'] = 0
         save_state(state)
@@ -576,13 +578,25 @@ def main():
             except Exception as e:
                 log(f"strapi slot err: {e}")
 
-        # ---- Walmart slot (configurable cadence) ----
-        is_wm_slot = last_slot != ('walmart', m) and (m - walmart_min) % walmart_cadence == 0
+        # ---- Walmart slot (jittered — bot detection'a karşı rastgele dakika) ----
+        # Her saat başı 2 rastgele dakika seçilir: AM (:11-:19) ve PM (:41-:49)
+        import random as _rnd
+        wm_state = state.setdefault('walmart', {})
+        cur_hour = now.replace(minute=0, second=0, microsecond=0).isoformat()
+        if wm_state.get('hour') != cur_hour:
+            wm_state['hour'] = cur_hour
+            wm_state['am_minute'] = _rnd.randint(11, 19)
+            wm_state['pm_minute'] = _rnd.randint(41, 49)
+            save_state(state)
+            log(f"WM: bu saat için jittered slot'lar → AM :{wm_state['am_minute']:02d}, PM :{wm_state['pm_minute']:02d}")
+
+        is_wm_slot = (last_slot != ('walmart', m)
+                       and m in (wm_state['am_minute'], wm_state['pm_minute']))
         if is_wm_slot and walmart_enabled:
             if is_walmart_cooldown(state):
                 log(f"WM: cooldown active until {state['walmart']['cooldown_until']}")
             else:
-                log(f"--- Walmart slot @ :{m:02d} ---")
+                log(f"--- Walmart slot @ :{m:02d} (jittered) ---")
                 run_walmart_slot(state, dry=dry)
                 last_slot = ('walmart', m)
         elif is_wm_slot and not walmart_enabled:
