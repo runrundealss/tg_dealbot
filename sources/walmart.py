@@ -17,7 +17,17 @@ sys.path.insert(0, BASE_DIR)
 import validators
 import notify
 
-UA_PHONE = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1"}
+UA_PHONE = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+}
 LOGO_PATH = os.path.join(BASE_DIR, "assets", "logo.png")
 IMG_TMP   = "/tmp/wm_pipe"
 COLLAGE_DIR = os.path.join(BASE_DIR, "images", "walmart")
@@ -99,10 +109,22 @@ def extract_us_item_id(walmart_url):
 
 
 def fetch_walmart_detail(us_item_id):
-    """Step 6-10. Returns (html, next_data, product, blocked_flag)."""
+    """Step 6-10. Returns (html, next_data, product, blocked_flag).
+    Decodes gzip if needed (Walmart returns gzipped HTML when Accept-Encoding includes gzip)."""
     req = urllib.request.Request(f"https://www.walmart.com/ip/{us_item_id}", headers=UA_PHONE)
     with urllib.request.urlopen(req, timeout=30) as r:
-        html = r.read().decode()
+        raw = r.read()
+        enc = r.headers.get('Content-Encoding','').lower()
+    if 'gzip' in enc:
+        import gzip; raw = gzip.decompress(raw)
+    elif 'br' in enc:
+        try:
+            import brotli; raw = brotli.decompress(raw)
+        except ImportError: pass
+    elif 'deflate' in enc:
+        import zlib; raw = zlib.decompress(raw)
+    try: html = raw.decode('utf-8', errors='ignore')
+    except Exception: html = str(raw)
     # Blocked detection: tiny HTML or no NEXT_DATA → IP rate-limited
     if len(html) < 50_000 or '__NEXT_DATA__' not in html:
         return html, None, None, True

@@ -64,8 +64,9 @@ if not os.path.exists(FONT_PATH):
 
 # ── Lock file — aynı anda birden fazla instance çalışmasını engelle.
 # launchd / shell birden çok kez başlatırsa eski PID hâlâ canlıysa exit.
+# DEALBOT_NO_LOCK=1 ile bypass (panel'in test post tetiklemesi için).
 _LOCK_PATH = os.path.join(BASE_DIR, ".dealbot.lock")
-if os.path.exists(_LOCK_PATH):
+if os.path.exists(_LOCK_PATH) and not os.environ.get('DEALBOT_NO_LOCK'):
     try:
         _old_pid = int(open(_LOCK_PATH).read().strip())
         os.kill(_old_pid, 0)  # PID hâlâ canlı mı?
@@ -73,9 +74,10 @@ if os.path.exists(_LOCK_PATH):
         sys.exit(0)
     except (OSError, ValueError):
         pass  # PID ölü/geçersiz, lock stale → devam, üzerine yaz
-with open(_LOCK_PATH, "w") as _f:
-    _f.write(str(os.getpid()))
-atexit.register(lambda: os.path.exists(_LOCK_PATH) and os.remove(_LOCK_PATH))
+if not os.environ.get('DEALBOT_NO_LOCK'):
+    with open(_LOCK_PATH, "w") as _f:
+        _f.write(str(os.getpid()))
+    atexit.register(lambda: os.path.exists(_LOCK_PATH) and os.remove(_LOCK_PATH))
 
 # ---------- helpers ----------
 
