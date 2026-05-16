@@ -184,8 +184,8 @@ def extract_us_item_id(walmart_url):
 
 
 def fetch_walmart_detail(us_item_id):
-    """Step 6-10. Uses curl_cffi with rotating browser impersonations + UA.
-    Retries with different impersonation if blocked on first attempt.
+    """Step 6-10. Session-aware curl_cffi: warmup with homepage, then product page.
+    Reuses cookies → looks like a real user who landed on walmart.com then clicked product.
     Returns (html, next_data, product, blocked_flag)."""
     import random
     try:
@@ -193,24 +193,30 @@ def fetch_walmart_detail(us_item_id):
     except ImportError:
         return _fetch_via_curl(us_item_id)
 
-    url = f"https://www.walmart.com/ip/{us_item_id}"
     impersonations = random.sample(WORKING_IMPERSONATES, len(WORKING_IMPERSONATES))
     html = ""
     for attempt, imp in enumerate(impersonations):
         ua = random.choice(UA_ROTATION)
         try:
-            r = cffi_requests.get(url, impersonate=imp,
-                                  headers={"User-Agent": ua,
-                                           "Accept-Language": "en-US,en;q=0.9"},
-                                  timeout=30)
+            # SESSION: cookies persist across requests in this session
+            session = cffi_requests.Session()
+            session.headers.update({"User-Agent": ua, "Accept-Language": "en-US,en;q=0.9"})
+            # 1) Warmup: visit homepage to establish cookies + WAF challenge solved
+            session.get("https://www.walmart.com/", impersonate=imp, timeout=30)
+            time.sleep(random.uniform(1.5, 3))  # human-like pause
+            # 2) Now hit product page with valid session cookies
+            r = session.get(f"https://www.walmart.com/ip/{us_item_id}",
+                            impersonate=imp,
+                            headers={"Referer": "https://www.walmart.com/"},
+                            timeout=30)
             html = r.text
         except Exception as e:
             html = f"err: {e}"
             continue
         if len(html) >= 50_000 and '__NEXT_DATA__' in html:
             break  # success
-        # blocked — wait 5-10s, try next impersonation
-        time.sleep(random.uniform(5, 10))
+        # blocked — wait 8-15s, try next impersonation
+        time.sleep(random.uniform(8, 15))
     if len(html) < 50_000 or '__NEXT_DATA__' not in html:
         return html, None, None, True
     m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
@@ -423,6 +429,7 @@ def run_one(cfg, token, channel, state, posted_hashes, log_fn):
         disc_pct = round((1 - cur/was) * 100)
         caption = build_caption(prod.get('name',''), cur, was, disc_pct)
         aff = build_aff_url(ctx['us_item_id'], cfg['walmart']['mavely_sharedid'])
+        first_comment = f"🛒 {aff}"
 
         return ('READY', {
             'post_uid': post_uid,
@@ -432,6 +439,7 @@ def run_one(cfg, token, channel, state, posted_hashes, log_fn):
             'collage_path': collage,
             'caption': caption,
             'aff_url': aff,
+            'first_comment': first_comment,
             'hash': ctx['hash'],
         }, None)
 
