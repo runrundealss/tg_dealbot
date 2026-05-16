@@ -477,7 +477,7 @@ def run_walmart_slot(state, dry=False):
     if not fb_token or not fb_channel:
         log("WM: buffer_access_token veya fb_channel_id yok — FB öncelikli, atlanıyor")
         return
-    fb_post_id = wm.send_to_facebook(fb_token, fb_channel, ready, log, schedule_mode="addToQueue")
+    fb_post_id = wm.send_to_facebook(fb_token, fb_channel, ready, log, schedule_mode="shareNow")
     if not fb_post_id:
         log(f"WM FB SEND FAIL {ready['us_item_id']} — Telegram'a da gönderilmiyor")
         notify.critical(TOKEN, _cfg.get('admin_chat_id'),

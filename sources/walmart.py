@@ -326,7 +326,7 @@ def build_caption(name, sale, was, disc_pct):
     return (
         f"🔥 {short} – {disc_pct}% OFF\n\n"
         f"💰 Was {was:.2f} → Now {sale:.2f}\n\n"
-        f"👇\n\n#ad"
+        f"👇\n\n#WalmartPartner #ad"
     )
 
 
