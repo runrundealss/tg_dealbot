@@ -469,25 +469,27 @@ def run_walmart_slot(state, dry=False):
     if dry:
         log(f"WM DRY ready: {ready['us_item_id']} {ready['name'][:50]}")
         return
-    # Telegram (multipart photo, no external host)
-    msg_id = wm.send_to_telegram(TOKEN, CHANNEL, ready, log)
-    if not msg_id:
-        log(f"WM TG SEND FAIL {ready['us_item_id']}")
-        return
-    log(f"WM SENT TG {ready['us_item_id']} msg_id={msg_id} -{ready['disc_pct']}% off")
-
-    # Facebook via Buffer (optional — needs buffer_access_token + fb_channel_id in config)
+    # FACEBOOK ÖNCE (Walmart bot'unun asıl hedefi — Buffer üzerinden FB sayfasına planla)
     fb_token = _cfg.get('buffer_access_token')
     fb_channel = _cfg.get('fb_channel_id')
-    fb_post_id = None
-    if fb_token and fb_channel:
-        fb_post_id = wm.send_to_facebook(fb_token, fb_channel, ready, log, schedule_mode="addToQueue")
-        if fb_post_id:
-            log(f"WM SENT FB {ready['us_item_id']} buffer_id={fb_post_id}")
-        else:
-            log(f"WM FB SEND FAIL {ready['us_item_id']}")
+    if not fb_token or not fb_channel:
+        log("WM: buffer_access_token veya fb_channel_id yok — FB öncelikli, atlanıyor")
+        return
+    fb_post_id = wm.send_to_facebook(fb_token, fb_channel, ready, log, schedule_mode="addToQueue")
+    if not fb_post_id:
+        log(f"WM FB SEND FAIL {ready['us_item_id']} — Telegram'a da gönderilmiyor")
+        notify.critical(TOKEN, _cfg.get('admin_chat_id'),
+            f"Walmart {ready['us_item_id']} Buffer/FB'ye gönderilemedi — Telegram da atlandı.",
+            _cfg.get('alert_throttle_per_hour', 5))
+        return
+    log(f"WM SENT FB {ready['us_item_id']} buffer_id={fb_post_id} -{ready['disc_pct']}% off")
+
+    # TELEGRAM (aynası — FB başarılıysa Telegram'a da yolla)
+    msg_id = wm.send_to_telegram(TOKEN, CHANNEL, ready, log)
+    if msg_id:
+        log(f"WM SENT TG (mirror) {ready['us_item_id']} msg_id={msg_id}")
     else:
-        log("WM: buffer_access_token veya fb_channel_id yok → FB atlandı")
+        log(f"WM TG mirror fail {ready['us_item_id']} (FB başarılı yine de)")
 
     state['posted'].append({
         'id': ready['post_uid'],
