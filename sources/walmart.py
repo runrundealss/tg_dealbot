@@ -399,3 +399,58 @@ def send_to_telegram(token, channel, ready, log_fn):
     except Exception as e:
         log_fn(f"telegram send err: {e}")
     return None
+
+
+def _catbox_upload(filepath):
+    """Upload to catbox.moe (anonymous, no key required). Returns URL."""
+    proc = subprocess.run([
+        "curl", "-sSL", "-F", "reqtype=fileupload",
+        "-F", f"fileToUpload=@{filepath}",
+        "https://catbox.moe/user/api.php"
+    ], capture_output=True, text=True, timeout=60)
+    return proc.stdout.strip()
+
+
+def send_to_facebook(buffer_token, fb_channel_id, ready, log_fn, schedule_mode="addToQueue"):
+    """Schedule post to Buffer queue → Facebook Page.
+    schedule_mode: 'addToQueue' (next slot) or 'shareNow' (immediate).
+    Uses catbox.moe for image hosting (Buffer needs URL, not multipart)."""
+    if not buffer_token or not fb_channel_id:
+        log_fn("buffer: token or channel_id missing → FB skip")
+        return None
+    # 1. Upload to catbox
+    img_url = _catbox_upload(ready['collage_path'])
+    if not img_url.startswith('http'):
+        log_fn(f"buffer: catbox upload failed: {img_url[:80]}")
+        return None
+    # 2. Buffer GraphQL createPost
+    mutation = ("mutation($input: CreatePostInput!) { createPost(input: $input) { "
+                "__typename ... on PostActionSuccess { post { id } } "
+                "... on InvalidInputError { message } ... on UnauthorizedError { message } "
+                "... on RestProxyError { message code } } }")
+    variables = {"input": {
+        "channelId": fb_channel_id,
+        "schedulingType": "automatic",
+        "mode": schedule_mode,
+        "text": ready['caption'],
+        "metadata": {"facebook": {"type": "post", "firstComment": ready['first_comment']}},
+        "assets": [{"image": {"url": img_url,
+                              "metadata": {"altText": ready['name'][:100],
+                                           "dimensions": {"width": 1080, "height": 1350}}}}],
+    }}
+    payload = json.dumps({"query": mutation, "variables": variables}).encode()
+    req = urllib.request.Request(
+        "https://graphql.buffer.com/",
+        data=payload, method="POST",
+        headers={"Authorization": f"Bearer {buffer_token}",
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            resp = json.loads(r.read())
+        d = resp.get("data",{}).get("createPost",{})
+        if d.get("__typename") == "PostActionSuccess":
+            return d["post"]["id"]
+        log_fn(f"buffer api error: {d}")
+    except Exception as e:
+        log_fn(f"buffer send err: {e}")
+    return None

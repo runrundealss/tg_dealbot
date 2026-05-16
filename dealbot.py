@@ -469,23 +469,38 @@ def run_walmart_slot(state, dry=False):
     if dry:
         log(f"WM DRY ready: {ready['us_item_id']} {ready['name'][:50]}")
         return
-    # send via multipart photo upload (Telegram CDN — no external host)
+    # Telegram (multipart photo, no external host)
     msg_id = wm.send_to_telegram(TOKEN, CHANNEL, ready, log)
-    if msg_id:
-        log(f"WM SENT {ready['us_item_id']} msg_id={msg_id} -{ready['disc_pct']}% off")
-        state['posted'].append({
-            'id': ready['post_uid'],
-            'asin': '',
-            'title_key': title_key(ready['name']),
-            'posted_at': datetime.now().isoformat(timespec='seconds'),
-            'msg_id': msg_id,
-            'source': 'walmart',
-        })
-        state['hashes'][ready['post_uid']] = ready['hash']
-        state.setdefault('walmart',{})['consecutive_fail'] = 0
-        save_state(state)
+    if not msg_id:
+        log(f"WM TG SEND FAIL {ready['us_item_id']}")
+        return
+    log(f"WM SENT TG {ready['us_item_id']} msg_id={msg_id} -{ready['disc_pct']}% off")
+
+    # Facebook via Buffer (optional — needs buffer_access_token + fb_channel_id in config)
+    fb_token = _cfg.get('buffer_access_token')
+    fb_channel = _cfg.get('fb_channel_id')
+    fb_post_id = None
+    if fb_token and fb_channel:
+        fb_post_id = wm.send_to_facebook(fb_token, fb_channel, ready, log, schedule_mode="addToQueue")
+        if fb_post_id:
+            log(f"WM SENT FB {ready['us_item_id']} buffer_id={fb_post_id}")
+        else:
+            log(f"WM FB SEND FAIL {ready['us_item_id']}")
     else:
-        log(f"WM SEND FAIL {ready['us_item_id']}")
+        log("WM: buffer_access_token veya fb_channel_id yok → FB atlandı")
+
+    state['posted'].append({
+        'id': ready['post_uid'],
+        'asin': '',
+        'title_key': title_key(ready['name']),
+        'posted_at': datetime.now().isoformat(timespec='seconds'),
+        'msg_id': msg_id,
+        'fb_post_id': fb_post_id,
+        'source': 'walmart',
+    })
+    state['hashes'][ready['post_uid']] = ready['hash']
+    state.setdefault('walmart',{})['consecutive_fail'] = 0
+    save_state(state)
 
 
 def is_walmart_cooldown(state):

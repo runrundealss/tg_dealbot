@@ -11,6 +11,9 @@
   "admin_chat_id": 455448835,
   "alert_throttle_per_hour": 5,
 
+  "buffer_access_token": "",
+  "fb_channel_id": "6a005bc8090476fb99044eaa",
+
   "walmart": {
     "enabled": true,
     "mavely_sharedid": "clg8ehq3x000f09822g2o6vjq",
