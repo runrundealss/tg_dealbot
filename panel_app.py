@@ -154,6 +154,16 @@ class BotDashboard(tk.Tk):
         # Log tab
         f_l = tk.Frame(nb, bg="white")
         nb.add(f_l, text="📜 Log")
+        # Toolbar — Log Temizle butonu
+        log_bar = tk.Frame(f_l, bg="white")
+        log_bar.pack(fill="x", padx=10, pady=(10, 0))
+        tk.Button(
+            log_bar, text="🗑  Log Temizle",
+            command=self._clear_log,
+            bg="#dc2626", fg="white",
+            relief="flat", padx=14, pady=6,
+            font=("SF Pro Text", 12, "bold"),
+        ).pack(side="right")
         self.log_text = scrolledtext.ScrolledText(
             f_l, font=("Menlo", 11), bg="#1e1e1e", fg="#d4d4d4",
             insertbackground="white", wrap="word")
@@ -206,6 +216,25 @@ class BotDashboard(tk.Tk):
 
     def _toast(self, msg, success=True):
         self.sb.config(text=("✅ " if success else "⚠️ ") + msg)
+
+    # ---- LOG TEMİZLE ----
+    def _clear_log(self):
+        """Tüm log dosyasını sıfırlar (kullanıcı butona basınca)."""
+        if not messagebox.askyesno(
+            "Log Temizle",
+            "Tüm log geçmişi silinecek. Emin misin?",
+            parent=self,
+        ):
+            return
+        try:
+            with open(LOG, "w") as f:
+                f.write(f"[{datetime.now().isoformat(timespec='seconds')}] [log cleared by panel]\n")
+            self.log_text.config(state="normal")
+            self.log_text.delete("1.0", "end")
+            self.log_text.config(state="disabled")
+            self._toast("Log temizlendi", success=True)
+        except Exception as e:
+            self._toast(f"Log temizleme hatası: {e}", success=False)
 
     # ---- DATA REFRESH ----
     def _auto_refresh(self):

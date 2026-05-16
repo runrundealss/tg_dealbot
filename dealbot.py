@@ -7,12 +7,22 @@ Telegram Deal Bot — Strapi-driven affiliate deal poster
 - Inline buttons: Go to Product, Copy Code
 - Self-updates via git pull every hour (launchd KeepAlive restarts on exit)
 """
-import json, os, sys, time, hashlib, urllib.request, urllib.parse, subprocess, re
+# ── SSL bootstrap — macOS system Python 3.9'da urllib CA bulamıyor sorunu.
+# Hem certifi varsa onu kullan, yoksa unverified context'e düş (sadece
+# public image/api request'i var → kimlik bilgisi sızmaz).
+import ssl
+try:
+    import certifi
+    ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    ssl._create_default_https_context = ssl._create_unverified_context
+
+import json, os, sys, time, hashlib, urllib.request, urllib.parse, subprocess, re, atexit
 from datetime import datetime, timezone
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-BASE_DIR_TMP  = os.path.dirname(os.path.abspath(__file__))
-_cfg_path     = os.path.join(BASE_DIR_TMP, "config.json")
+BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
+_cfg_path     = os.path.join(BASE_DIR, "config.json")
 if not os.path.exists(_cfg_path):
     raise SystemExit(f"config.json bulunamadı — config.example.json'u kopyalayıp doldur: {_cfg_path}")
 _cfg          = json.load(open(_cfg_path))
@@ -33,14 +43,59 @@ MAX_FAIL_ATTEMPTS = 3          # how many fails before giving up on a product
 FAIL_RETRY_HOURS = 24          # after this long, reset attempts and try again
 UPDATE_CHECK_SECS = 3600       # check git origin for new version every hour
 
-BASE_DIR      = "/Users/kaan/tg_dealbot"
-IMG_DIR       = f"{BASE_DIR}/images"
-LOG_PATH      = f"{BASE_DIR}/dealbot.log"
-STATE_PATH    = f"{BASE_DIR}/state.json"
-PRODUCTS_PATH = f"{BASE_DIR}/products.json"
+# Path'ler artık script'in kendi klasöründen türer — herhangi bir kullanıcıda
+# (kaan, begum, vs.) doğru yere işaret eder.
+IMG_DIR       = os.path.join(BASE_DIR, "images")
+LOG_PATH      = os.path.join(BASE_DIR, "dealbot.log")
+STATE_PATH    = os.path.join(BASE_DIR, "state.json")
+PRODUCTS_PATH = os.path.join(BASE_DIR, "products.json")
 os.makedirs(IMG_DIR, exist_ok=True)
 
+# Font yoksa otomatik indir — install script'i atlandıysa veya /tmp restartlandıysa
+if not os.path.exists(FONT_PATH):
+    try:
+        os.makedirs(os.path.dirname(FONT_PATH), exist_ok=True)
+        urllib.request.urlretrieve(
+            "https://github.com/google/fonts/raw/main/ofl/bangers/Bangers-Regular.ttf",
+            FONT_PATH,
+        )
+    except Exception as _e:
+        print(f"[bootstrap] font download failed: {_e}", file=sys.stderr)
+
+# ── Lock file — aynı anda birden fazla instance çalışmasını engelle.
+# launchd / shell birden çok kez başlatırsa eski PID hâlâ canlıysa exit.
+_LOCK_PATH = os.path.join(BASE_DIR, ".dealbot.lock")
+if os.path.exists(_LOCK_PATH):
+    try:
+        _old_pid = int(open(_LOCK_PATH).read().strip())
+        os.kill(_old_pid, 0)  # PID hâlâ canlı mı?
+        print(f"[lock] already running pid={_old_pid}, exiting", file=sys.stderr)
+        sys.exit(0)
+    except (OSError, ValueError):
+        pass  # PID ölü/geçersiz, lock stale → devam, üzerine yaz
+with open(_LOCK_PATH, "w") as _f:
+    _f.write(str(os.getpid()))
+atexit.register(lambda: os.path.exists(_LOCK_PATH) and os.remove(_LOCK_PATH))
+
 # ---------- helpers ----------
+
+# Log rotation — log dosyası belli boyutu aşınca son N satırı tut, gerisini at.
+# Bot 7/24 çalışır, panele 150 satır gösterir; eski log diske ihtiyaç olmaz.
+LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB üstüne çıkarsa kırp
+LOG_KEEP_LINES = 2000            # kırpınca son bu kadar satırı tut
+
+def _rotate_log_if_big():
+    try:
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
+            with open(LOG_PATH, "r") as f:
+                tail = f.readlines()[-LOG_KEEP_LINES:]
+            with open(LOG_PATH, "w") as f:
+                f.write(f"[{datetime.now().isoformat(timespec='seconds')}] [log rotated, kept last {LOG_KEEP_LINES} lines]\n")
+                f.writelines(tail)
+    except Exception:
+        pass
+
+_rotate_log_if_big()  # bot başlarken kontrol et
 
 def log(msg):
     line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
