@@ -24,3 +24,5 @@ venv/
 config.json
 .token
 .venv/
+!assets/
+!assets/*.png

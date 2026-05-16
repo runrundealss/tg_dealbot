@@ -47,15 +47,17 @@ else
   cd "$INSTALL_DIR"
 fi
 
-# ---- 3) Venv oluştur + Pillow/rumps kur ----
+# ---- 3) Venv oluştur + Pillow/rumps/Playwright kur ----
 echo "==> Venv kuruluyor: $VENV_DIR"
 if [ ! -x "$VENV_DIR/bin/python" ]; then
   "$SYS_PY" -m venv "$VENV_DIR"
 fi
 PY="$VENV_DIR/bin/python"
 "$PY" -m pip install --upgrade --quiet pip 2>/dev/null || true
-"$PY" -m pip install --quiet pillow rumps
-"$PY" -c "import tkinter, PIL; print('   PIL', PIL.__version__, '+ tkinter OK')"
+"$PY" -m pip install --quiet pillow rumps playwright
+echo "==> Playwright Chromium indir (~120MB)"
+"$PY" -m playwright install chromium 2>&1 | tail -3 || true
+"$PY" -c "import tkinter, PIL, playwright; print('   PIL', PIL.__version__, '+ tkinter + playwright OK')"
 
 # ---- 4) Font ----
 echo "==> Bangers font"

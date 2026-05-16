@@ -18,7 +18,7 @@ except ImportError:
     ssl._create_default_https_context = ssl._create_unverified_context
 
 import json, os, sys, time, hashlib, urllib.request, urllib.parse, subprocess, re, atexit
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -428,6 +428,70 @@ def process_one(product, state, dry_run=False):
         record_fail(state, key, "telegram_send", res)
         return None
 
+# ---------- Walmart pipeline integration ----------
+
+def run_walmart_slot(state, dry=False):
+    """One Walmart slot: pick first eligible savings101 deal, validate, post.
+       Triggered on schedule.walmart_minute (default :30 of every hour)."""
+    try:
+        from sources import walmart as wm
+        import notify
+    except Exception as e:
+        log(f"walmart module import err: {e}")
+        return
+    if not _cfg.get('walmart',{}).get('enabled'):
+        return
+    posted_hashes = set(state.get('hashes',{}).values())
+    status, ready, _ = wm.run_one(_cfg, TOKEN, CHANNEL, state, posted_hashes, log)
+    if status == 'BLOCKED':
+        log("WM: Walmart blocked — entering 60-min cooldown")
+        notify.critical(TOKEN, _cfg.get('admin_chat_id'),
+            "Walmart rate-limit aktif (HTTP/blocked response). Bot 60dk pas geçiyor.",
+            _cfg.get('alert_throttle_per_hour', 5))
+        state.setdefault('walmart',{})['cooldown_until'] = (datetime.now() + timedelta(minutes=60)).isoformat()
+        save_state(state)
+        return
+    if status != 'READY' or not ready:
+        log(f"WM: no eligible candidate this slot")
+        wf = state.setdefault('walmart',{}).setdefault('consecutive_fail', 0)
+        state['walmart']['consecutive_fail'] = wf + 1
+        if state['walmart']['consecutive_fail'] >= 5:
+            notify.critical(TOKEN, _cfg.get('admin_chat_id'),
+                f"Walmart {state['walmart']['consecutive_fail']} slot ardı ardına eligible candidate bulamadı.",
+                _cfg.get('alert_throttle_per_hour', 5))
+            state['walmart']['consecutive_fail'] = 0
+        save_state(state)
+        return
+    if dry:
+        log(f"WM DRY ready: {ready['us_item_id']} {ready['name'][:50]}")
+        return
+    # send via multipart photo upload (Telegram CDN — no external host)
+    msg_id = wm.send_to_telegram(TOKEN, CHANNEL, ready, log)
+    if msg_id:
+        log(f"WM SENT {ready['us_item_id']} msg_id={msg_id} -{ready['disc_pct']}% off")
+        state['posted'].append({
+            'id': ready['post_uid'],
+            'asin': '',
+            'title_key': title_key(ready['name']),
+            'posted_at': datetime.now().isoformat(timespec='seconds'),
+            'msg_id': msg_id,
+            'source': 'walmart',
+        })
+        state['hashes'][ready['post_uid']] = ready['hash']
+        state.setdefault('walmart',{})['consecutive_fail'] = 0
+        save_state(state)
+    else:
+        log(f"WM SEND FAIL {ready['us_item_id']}")
+
+
+def is_walmart_cooldown(state):
+    cd = state.get('walmart',{}).get('cooldown_until')
+    if not cd: return False
+    try:
+        return datetime.fromisoformat(cd) > datetime.now()
+    except Exception: return False
+
+
 # ---------- main loop ----------
 
 def main():
@@ -440,46 +504,54 @@ def main():
     if refresh_now or not os.path.exists(PRODUCTS_PATH):
         refresh_products(state, force=True)
 
-    log(f"DAEMON START — refresh_every={REFRESH_SECS//60}min, post_every={POST_SECS//60}min, dry={dry}")
+    sched = _cfg.get('schedule', {})
+    strapi_min  = int(sched.get('strapi_minute', 0))
+    walmart_min = int(sched.get('walmart_minute', 30))
+    log(f"DAEMON START — schedule: Strapi @:{strapi_min:02d}, Walmart @:{walmart_min:02d} | dry={dry}")
 
+    last_slot = None  # ('strapi'|'walmart', minute_of_hour) — debounce
     while True:
         check_for_update()
         prune_state(state)
-        # refresh products if it's time
-        refresh_products(state)  # no-op unless 1 hour passed
-        try:
-            products = json.load(open(PRODUCTS_PATH))
-        except Exception as e:
-            log(f"products.json read fail: {e}")
-            time.sleep(60); continue
+        now = datetime.now()
+        m = now.minute
 
-        # find next eligible (skip duplicates / cooldowns)
-        next_p = None
-        for p in products:
-            skip, _ = should_skip(p, state)
-            if not skip:
-                next_p = p; break
+        # ---- Strapi slot (current cadence: 10 min) ----
+        # Keep existing every-10-min behavior unchanged for Strapi but offset minute
+        if last_slot != ('strapi', m) and (m - strapi_min) % 10 == 0:
+            refresh_products(state)
+            try:
+                products = json.load(open(PRODUCTS_PATH))
+                next_p = None
+                for p in products:
+                    skip, _ = should_skip(p, state)
+                    if not skip: next_p = p; break
+                if next_p:
+                    log(f"--- Strapi slot @ :{m:02d} ---")
+                    result = process_one(next_p, state, dry_run=dry)
+                    if result == "DUPLICATE_ABORT":
+                        log("BOT EXITED — duplicate hash"); sys.exit(2)
+                    last_slot = ('strapi', m)
+            except Exception as e:
+                log(f"strapi slot err: {e}")
 
-        if not next_p:
-            log("queue empty — waiting for next Strapi refresh")
-            # sleep until next refresh time
-            sleep_for = REFRESH_SECS - (time.time() - state.get("last_refresh", 0))
-            sleep_for = max(60, min(sleep_for, REFRESH_SECS))
-            log(f"sleeping {int(sleep_for)}s")
-            time.sleep(sleep_for)
-            continue
-
-        result = process_one(next_p, state, dry_run=dry)
-        if result == "DUPLICATE_ABORT":
-            log("BOT EXITED to prevent duplicate spam")
-            sys.exit(2)
+        # ---- Walmart slot (hourly at walmart_min) ----
+        if last_slot != ('walmart', m) and m == walmart_min:
+            if is_walmart_cooldown(state):
+                log(f"WM: cooldown active until {state['walmart']['cooldown_until']}")
+            else:
+                log(f"--- Walmart slot @ :{m:02d} ---")
+                run_walmart_slot(state, dry=dry)
+                last_slot = ('walmart', m)
 
         if once:
             log("--once flag set, exiting")
             break
 
-        log(f"sleeping {POST_SECS//60}min until next post")
-        time.sleep(POST_SECS)
+        # Sleep until next minute boundary
+        sleep_secs = 60 - now.second
+        time.sleep(max(15, sleep_secs))
+
 
 if __name__ == "__main__":
     main()

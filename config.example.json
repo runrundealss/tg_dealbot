@@ -6,5 +6,22 @@
   "min_discount": 20,
   "post_interval_sec": 600,
   "refresh_interval_sec": 3600,
-  "asin_cooldown_days": 10
+  "asin_cooldown_days": 10,
+
+  "admin_chat_id": 455448835,
+  "alert_throttle_per_hour": 5,
+
+  "walmart": {
+    "enabled": true,
+    "mavely_sharedid": "clg8ehq3x000f09822g2o6vjq",
+    "savings101_wp_api": "https://savings101hub.com/wp-json/wp/v2/posts",
+    "category_name": "Walmart Deals",
+    "min_discount_pct": 20,
+    "require_was_price": true
+  },
+
+  "schedule": {
+    "strapi_minute": 0,
+    "walmart_minute": 30
+  }
 }
