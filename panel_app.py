@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 
-BASE      = "/Users/kaan/tg_dealbot"
+BASE      = os.path.expanduser("~/tg_dealbot")
 STATE     = f"{BASE}/state.json"
 PRODUCTS  = f"{BASE}/products.json"
 LOG       = f"{BASE}/dealbot.log"

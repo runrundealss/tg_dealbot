@@ -1,5 +1,10 @@
 #!/bin/bash
-# RunRunDeals Bot launcher
-cd /Users/kaan/tg_dealbot
+# RunRunDeals Bot launcher — kullanıcının home klasöründeki tg_dealbot'u açar
+DIR="$HOME/tg_dealbot"
+if [ ! -d "$DIR" ]; then
+  /usr/bin/osascript -e "display alert \"RunRunDeals Bot\" message \"Kurulum bulunamadı: $DIR\"" >/dev/null 2>&1
+  exit 1
+fi
+cd "$DIR"
 PY=$(command -v python3.13 || command -v python3 || echo /usr/bin/python3)
 exec "$PY" panel_app.py
