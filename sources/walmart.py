@@ -440,7 +440,7 @@ def send_to_facebook(buffer_token, fb_channel_id, ready, log_fn, schedule_mode="
     }}
     payload = json.dumps({"query": mutation, "variables": variables}).encode()
     req = urllib.request.Request(
-        "https://graphql.buffer.com/",
+        "https://api.buffer.com/2/graphql",
         data=payload, method="POST",
         headers={"Authorization": f"Bearer {buffer_token}",
                  "Content-Type": "application/json"})
