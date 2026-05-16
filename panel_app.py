@@ -112,6 +112,8 @@ class BotDashboard(tk.Tk):
         self.btn_stop.pack(side="left", padx=4)
         self.btn_refresh = ttk.Button(btn_frame, text="🔄 Strapi Refresh", command=self.on_refresh)
         self.btn_refresh.pack(side="left", padx=4)
+        self.btn_update = ttk.Button(btn_frame, text="⬇️ Güncelle", command=self.on_update)
+        self.btn_update.pack(side="left", padx=4)
         self.btn_chan = ttk.Button(btn_frame, text="🔗 Kanalı Aç",
                                    command=lambda: webbrowser.open("https://t.me/RunRunDeals"))
         self.btn_chan.pack(side="left", padx=4)
@@ -213,6 +215,41 @@ class BotDashboard(tk.Tk):
     def on_refresh(self):
         ok, msg = force_refresh()
         self._toast(msg, success=ok)
+
+    def on_update(self):
+        """git pull → bot restart. Begum'un terminale girmesi gerekmesin diye."""
+        if not messagebox.askyesno(
+            "Güncelle",
+            "GitHub'dan son sürümü çekip botu yeniden başlatacağım. Devam?",
+            parent=self,
+        ):
+            return
+        self.btn_update.config(state="disabled")
+        self._toast("Güncelleniyor...", success=True)
+        # Thread'de çalıştır UI donmasın
+        def _run():
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", BASE, "pull", "--ff-only"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                out = (proc.stdout + proc.stderr).strip()
+                if proc.returncode != 0:
+                    self.after(0, lambda: self._toast(f"Pull hatası: {out[:120]}", success=False))
+                    self.after(0, lambda: self.btn_update.config(state="normal"))
+                    return
+                # Pull başarılı → bot restart
+                stop_daemon()
+                time.sleep(1)
+                start_daemon()
+                msg = "Up to date" if "up to date" in out.lower() else "Güncellendi + yeniden başlatıldı"
+                self.after(0, lambda: self._toast(msg, success=True))
+            except Exception as e:
+                self.after(0, lambda: self._toast(f"Güncelleme hatası: {e}", success=False))
+            finally:
+                self.after(0, lambda: self.btn_update.config(state="normal"))
+                self.after(0, self.refresh)
+        threading.Thread(target=_run, daemon=True).start()
 
     def _toast(self, msg, success=True):
         self.sb.config(text=("✅ " if success else "⚠️ ") + msg)
