@@ -57,8 +57,8 @@ def _chrome_path():
 # ---------- step helpers ----------
 
 def fetch_savings101(cfg):
-    """Step 1-2: pull recent posts in Walmart Deals."""
-    url = f"{cfg['walmart']['savings101_wp_api']}?per_page=20&_embed"
+    """Step 1-2: pull recent posts in Walmart Deals (50 — savings101 ~30/gün, fazlasıyla yetiyor)."""
+    url = f"{cfg['walmart']['savings101_wp_api']}?per_page=50&_embed"
     req = urllib.request.Request(url, headers=UA_PHONE)
     with urllib.request.urlopen(req, timeout=30) as r:
         posts = json.loads(r.read())
