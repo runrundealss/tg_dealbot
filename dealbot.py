@@ -124,8 +124,27 @@ def save_state(s):
     with open(STATE_PATH, "w") as f: json.dump(s, f, indent=2)
 
 def title_key(t):
-    """Normalized title for dedup (lowercase, first 50 chars)."""
-    return re.sub(r"\s+", " ", (t or "").lower()).strip()[:50]
+    """Aggressive normalization for variant dedup.
+       Strips sizes (S/M/L/XL/...), colors, pack counts, standalone numbers, and
+       returns the first 5 significant words.  Same item with different size or
+       color produces the SAME key → caught as variant.
+    """
+    if not t: return ""
+    s = t.lower()
+    # Strip parenthetical / bracket content (often size/color/SKU)
+    s = re.sub(r"[\(\[][^\)\]]*[\)\]]", " ", s)
+    # Strip size & numeric size+pack tokens
+    s = re.sub(r"\b(xs|sm|md|lg|xl|xxl|xxxl|small|medium|large|x[\-]?large|xx[\-]?large)\b", " ", s)
+    s = re.sub(r"\b(\d+\s*-?\s*(pack|piece|pieces|pcs|count|ct|set|sets|pair|pairs))\b", " ", s)
+    s = re.sub(r"\b\d+\s*(oz|ml|lb|kg|gram|g|cm|in|inch|ft)\b", " ", s)
+    # Strip common color words
+    s = re.sub(r"\b(red|blue|green|black|white|pink|yellow|gray|grey|brown|purple|orange|navy|beige|ivory|olive|teal|cyan|magenta|gold|silver|rose|khaki)\b", " ", s)
+    # Strip standalone numbers (year, edition, sku digits) — keep only words
+    s = re.sub(r"[^a-z\s]", " ", s)
+    s = re.sub(r"\b\d+\b", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    words = s.split()[:5]
+    return " ".join(words)
 
 def prune_state(state):
     """Drop posted entries older than STATE_TTL_DAYS."""
@@ -166,10 +185,11 @@ def should_skip(product, state):
                 if datetime.fromisoformat(e["posted_at"]) >= cutoff_cool:
                     return True, f"ASIN {asin} cooldown ({ASIN_COOLDOWN_DAYS}d)"
             except Exception: pass
-        if not asin and tkey and e.get("title_key") == tkey:
+        # Variant dedup: same normalized title_key counts as already-posted, regardless of ASIN
+        if tkey and e.get("title_key") == tkey:
             try:
                 if datetime.fromisoformat(e["posted_at"]) >= cutoff_cool:
-                    return True, f"title cooldown ({ASIN_COOLDOWN_DAYS}d)"
+                    return True, f"variant of recently-posted '{tkey[:30]}' ({ASIN_COOLDOWN_DAYS}d)"
             except Exception: pass
     return False, ""
 
@@ -267,6 +287,10 @@ def fetch_strapi():
     return out
 
 def refresh_products(state, force=False):
+    """Saat başı: eski queue'yi sil, Strapi'den taze ürünleri çek.
+       - Daha önce paylaşılmış ID/ASIN/title-variant'ları düşürür.
+       - Aynı batch içinde variant tekrarları varsa sadece 1'ini tutar.
+    """
     now = time.time()
     if not force and now - state.get("last_refresh", 0) < REFRESH_SECS:
         return None
@@ -274,48 +298,96 @@ def refresh_products(state, force=False):
     if not items:
         log("refresh: no items returned, keeping existing products.json")
         return None
-    # MERGE: combine with existing products.json, dedup by Strapi _id, newest first
-    existing = []
-    if os.path.exists(PRODUCTS_PATH):
-        try: existing = json.load(open(PRODUCTS_PATH))
-        except Exception: existing = []
-    seen_ids = set()
-    merged = []
-    for src in [items, existing]:                     # new ones first
-        for p in src:
-            pid = p.get("id")
-            if pid and pid not in seen_ids:
-                seen_ids.add(pid)
-                merged.append(p)
-    # Drop any product whose Strapi _id is already in state.posted (no need to keep)
-    posted_ids = {e.get("id") for e in state.get("posted", []) if e.get("id")}
-    merged = [p for p in merged if p.get("id") not in posted_ids]
-    with open(PRODUCTS_PATH, "w") as f: json.dump(merged, f, indent=2)
+
+    posted = state.get("posted", []) or []
+    posted_ids   = {e.get("id")   for e in posted if e.get("id")}
+    posted_asins = {e.get("asin") for e in posted if e.get("asin")}
+    posted_tkeys = {e.get("title_key") for e in posted if e.get("title_key")}
+
+    fresh = []
+    seen_tkeys = set()    # intra-batch variant dedup
+    seen_asins = set()
+    dropped = {"posted_id": 0, "posted_asin": 0, "posted_variant": 0, "batch_variant": 0}
+    for p in items:
+        pid  = p.get("id")
+        asin = p.get("asin") or ""
+        tkey = title_key(p.get("title"))
+        if pid in posted_ids:
+            dropped["posted_id"] += 1; continue
+        if asin and asin in posted_asins:
+            dropped["posted_asin"] += 1; continue
+        if tkey and tkey in posted_tkeys:
+            dropped["posted_variant"] += 1; continue
+        if tkey and tkey in seen_tkeys:
+            dropped["batch_variant"] += 1; continue
+        if asin and asin in seen_asins:
+            dropped["batch_variant"] += 1; continue
+        seen_tkeys.add(tkey)
+        if asin: seen_asins.add(asin)
+        fresh.append(p)
+
+    with open(PRODUCTS_PATH, "w") as f: json.dump(fresh, f, indent=2)
     state["last_refresh"] = now
     save_state(state)
-    log(f"refresh: +{len(items)} new from Strapi, queue={len(merged)} (after dedup)")
-    return merged
+    log(f"refresh: Strapi={len(items)} → queue REPLACED with {len(fresh)} fresh "
+        f"(dropped: posted_id={dropped['posted_id']}, posted_asin={dropped['posted_asin']}, "
+        f"posted_variant={dropped['posted_variant']}, batch_variant={dropped['batch_variant']})")
+    return fresh
 
 # ---------- image generation ----------
 
+def _hires_amazon_url(url):
+    """Strapi 400x400 thumbnail → Amazon 2000x2000 hires.
+    Pattern: 41xxx._SR400,400_.jpg → 41xxx._UF2000,2000_.jpg
+    """
+    if not url or ("media-amazon.com" not in url and "ssl-images-amazon" not in url):
+        return url
+    if re.search(r"\._[A-Z0-9_,]+_\.(jpe?g|png)", url, flags=re.I):
+        return re.sub(r"\._[A-Z0-9_,]+_\.(jpe?g|png)",
+                      r"._UF2000,2000_.\1", url, flags=re.I)
+    return re.sub(r"\.(jpe?g|png)$", r"._UF2000,2000_.\1", url, flags=re.I)
+
+def _trim_whitespace(img, threshold=240):
+    """Crop the near-white border around the product."""
+    try:
+        import numpy as np
+        arr = np.array(img.convert("RGB"))
+        mask = ~(arr > threshold).all(axis=2)
+        rows = mask.any(axis=1)
+        cols = mask.any(axis=0)
+        if not rows.any() or not cols.any():
+            return img
+        rmin, rmax = int(np.where(rows)[0][0]), int(np.where(rows)[0][-1])
+        cmin, cmax = int(np.where(cols)[0][0]), int(np.where(cols)[0][-1])
+        return img.crop((cmin, rmin, cmax+1, rmax+1))
+    except Exception:
+        # numpy missing — fall back to PIL bbox-based trim
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        diff = ImageOps.invert(ImageOps.grayscale(img))
+        bbox = diff.getbbox()
+        return img.crop(bbox) if bbox else img
+
 def make_image(prod_img_path, disc_pct, sale, reg, out_path):
-    SIZE = 1080
+    """Build a 1500×1500 Telegram post image.
+    Note: prod_img_path is treated as a hint — caller may have downloaded the
+    Strapi thumbnail. We re-fetch the hires version from Amazon CDN when
+    possible (overrides whatever was on disk)."""
+    SIZE = 1500
     canvas = Image.new("RGB", (SIZE, SIZE), "white")
-    prod = Image.open(prod_img_path).convert("RGBA")
-    bg = Image.new(prod.mode, prod.size, (255,255,255,255))
-    diff = ImageOps.invert(ImageOps.grayscale(Image.alpha_composite(bg, prod)))
-    bbox = diff.getbbox()
-    if bbox: prod = prod.crop(bbox)
-    TOP_AREA, BOTTOM_AREA, SIDE_PAD = 240, 200, 80
+    prod = Image.open(prod_img_path).convert("RGB")
+    prod = _trim_whitespace(prod, threshold=240)
+
+    TOP_AREA, BOTTOM_AREA, SIDE_PAD = 300, 245, 85
     target_w = SIZE - 2*SIDE_PAD
-    target_h = SIZE - TOP_AREA - BOTTOM_AREA - 40
+    target_h = SIZE - TOP_AREA - BOTTOM_AREA
     prod.thumbnail((target_w, target_h), Image.LANCZOS)
     px = (SIZE - prod.width) // 2
     py = TOP_AREA + (target_h - prod.height) // 2
-    canvas.paste(prod, (px, py), prod)
+    canvas.paste(prod, (px, py))
+
     draw = ImageDraw.Draw(canvas)
-    F_TOP = ImageFont.truetype(FONT_PATH, 180)
-    F_BOT = ImageFont.truetype(FONT_PATH, 110)
+    F_TOP = ImageFont.truetype(FONT_PATH, 250)
+    F_BOT = ImageFont.truetype(FONT_PATH, 155)
     def outlined(d, txt, font, y, outline):
         bb = d.textbbox((0,0), txt, font=font); w = bb[2]-bb[0]
         x = (SIZE - w)//2 - bb[0]
@@ -324,9 +396,9 @@ def make_image(prod_img_path, disc_pct, sale, reg, out_path):
                 if dx*dx + dy*dy <= outline*outline:
                     d.text((x+dx, y+dy), txt, font=font, fill="black")
         d.text((x, y), txt, font=font, fill="white")
-    outlined(draw, f"%{disc_pct} DEALS", F_TOP, 40, outline=6)
-    outlined(draw, f"ONLY {sale:.2f} - REG ({reg:.2f})", F_BOT, SIZE-165, outline=4)
-    canvas.save(out_path, "PNG")
+    outlined(draw, f"%{disc_pct} DEALS", F_TOP, 35, outline=8)
+    outlined(draw, f"ONLY {sale:.2f} - REG ({reg:.2f})", F_BOT, SIZE-210, outline=6)
+    canvas.save(out_path, "PNG", optimize=True)
     with open(out_path, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
 
@@ -389,11 +461,17 @@ def process_one(product, state, dry_run=False):
         log(f"SKIP {key} — {reason}")
         return "SKIPPED"
     raw_path = f"/tmp/dealbot_raw_{key}.jpg"
+    # Strapi sends 400×400 thumbnail; ask Amazon CDN for the 2000×2000 hires.
+    # If the hires URL fails (rare), fall back to the original thumbnail.
+    hires_url = _hires_amazon_url(product["image_url"])
     try:
-        urllib.request.urlretrieve(product["image_url"], raw_path)
-    except Exception as e:
-        record_fail(state, key, "image_download", e)
-        return None
+        urllib.request.urlretrieve(hires_url, raw_path)
+    except Exception as e_hi:
+        try:
+            urllib.request.urlretrieve(product["image_url"], raw_path)
+        except Exception as e:
+            record_fail(state, key, "image_download", e)
+            return None
     img_path = f"{IMG_DIR}/dealpost_{key}.png"
     try:
         md5 = make_image(raw_path, product["disc"], product["sale"], product["reg"], img_path)
