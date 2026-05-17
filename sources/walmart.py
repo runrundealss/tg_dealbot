@@ -407,30 +407,60 @@ def run_one(cfg, token, channel, state, posted_hashes, log_fn):
     log_fn(f"savings101 returned {len(posts)} Walmart-Deals posts")
     if not posts: return ('NO_CANDIDATE', None, None)
 
-    # Filter to TODAY-dated savings101 posts only — old posts are ignored
-    from datetime import datetime as _dt, date as _date
-    today = _date.today()
+    # Filter to TODAY-dated posts using US EASTERN time.
+    # savings101 is a US-based site → its post timestamps and "today" line up
+    # with US/Eastern, not Istanbul.  At 13:41 Istanbul (06:41 ET) the US site
+    # may not yet have started publishing today's deals.
+    from datetime import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        ET = ZoneInfo("America/New_York")
+    except Exception:
+        from datetime import timezone as _tz, timedelta as _td
+        ET = _tz(_td(hours=-5))  # crude fallback: ET ≈ UTC-5 (or -4 DST)
+    today_us = _dt.now(ET).date()
+
+    def _post_date_us(s):
+        """Parse a savings101 post date and convert to US/Eastern date."""
+        if not s: return None
+        s = s.replace('Z', '+00:00')
+        try:
+            dt = _dt.fromisoformat(s)
+        except Exception:
+            return None
+        if dt.tzinfo is None:
+            # WP API dates are naive in site-local time; savings101 site = US.
+            dt = dt.replace(tzinfo=ET)
+        return dt.astimezone(ET).date()
+
     today_posts = []
     for p in posts:
-        pdate = (p.get('date') or '').replace('Z', '')
-        try:
-            if _dt.fromisoformat(pdate).date() == today:
-                today_posts.append(p)
-        except Exception:
-            pass
-    log_fn(f"  → {len(today_posts)} today-dated posts")
+        if _post_date_us(p.get('date')) == today_us:
+            today_posts.append(p)
+    log_fn(f"  → {len(today_posts)} posts dated today (US/Eastern {today_us})")
     if not today_posts:
         return ('NO_CANDIDATE', None, None)
 
-    # If today's daily target already sent → stop, NO walmart.com visit this slot
+    # If today's daily target already sent → stop, NO walmart.com visit this slot.
+    # "Today" here is the same US/Eastern date.
     target_per_day = int((cfg.get('walmart') or {}).get('target_per_day', 12))
-    today_str = today.isoformat()
-    sent_today = sum(
-        1 for e in (state.get('posted') or [])
-        if e.get('source') == 'walmart'
-        and (e.get('posted_at') or '').startswith(today_str)
-    )
-    log_fn(f"  → {sent_today}/{target_per_day} Walmart posts sent today")
+    today_str = today_us.isoformat()
+    sent_today = 0
+    for e in (state.get('posted') or []):
+        if e.get('source') != 'walmart': continue
+        ts = e.get('posted_at') or ''
+        try:
+            edt = _dt.fromisoformat(ts.replace('Z', '+00:00'))
+            if edt.tzinfo is None:
+                # Saved as local; convert local→ET
+                edt = edt.replace(tzinfo=_dt.now().astimezone().tzinfo)
+            if edt.astimezone(ET).date() == today_us:
+                sent_today += 1
+        except Exception:
+            # Old entries with bare date: fall back to startswith on US date string
+            if ts.startswith(today_str):
+                sent_today += 1
+    log_fn(f"  → {sent_today}/{target_per_day} Walmart posts sent today (ET)")
     if sent_today >= target_per_day:
         return ('DONE_TODAY', None, None)
 

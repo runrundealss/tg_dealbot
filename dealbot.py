@@ -546,15 +546,23 @@ def run_walmart_slot(state, dry=False, force=False):
         save_state(state)
         return
     if status == 'DONE_TODAY':
-        # Günlük hedef doldu — sessizce pas geç, alert YOK, walmart.com'a hiç uğranmadı
-        log("WM: günlük hedef (12 post) tamam, yarına kadar uyumakta")
+        # Günlük hedef doldu — sessizce pas geç, alert YOK, walmart.com'a hiç uğranmadı.
+        # Cooldown US/Eastern gün dönümüne (00:01 ET) kadar — savings101 buna göre çalışıyor.
+        log("WM: günlük hedef (12 post) tamam, yarın ET 00:01'e kadar uyumakta")
         wm_st = state.setdefault('walmart',{})
         wm_st['last_fire_at'] = datetime.now().isoformat(timespec='seconds')
         wm_st['consecutive_fail'] = 0
-        # Yarın 00:01'e kadar tekrar deneme (date değişene kadar slot atlasın)
         from datetime import datetime as _dt, timedelta as _td
-        tomorrow = (_dt.now() + _td(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
-        wm_st['cooldown_until'] = tomorrow.isoformat()
+        try:
+            from zoneinfo import ZoneInfo
+            ET = ZoneInfo("America/New_York")
+        except Exception:
+            from datetime import timezone as _tz
+            ET = _tz(_td(hours=-5))
+        tomorrow_et = (_dt.now(ET) + _td(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+        # Local'e geri çevir ki dealbot'un mevcut karşılaştırma mantığı (datetime.fromisoformat)
+        # doğru çalışsın.
+        wm_st['cooldown_until'] = tomorrow_et.astimezone().replace(tzinfo=None).isoformat()
         save_state(state)
         return
     if status != 'READY' or not ready:
