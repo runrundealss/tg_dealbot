@@ -467,6 +467,18 @@ def run_walmart_slot(state, dry=False, force=False):
         state.setdefault('walmart',{})['cooldown_until'] = (datetime.now() + timedelta(minutes=60)).isoformat()
         save_state(state)
         return
+    if status == 'DONE_TODAY':
+        # Günlük hedef doldu — sessizce pas geç, alert YOK, walmart.com'a hiç uğranmadı
+        log("WM: günlük hedef (12 post) tamam, yarına kadar uyumakta")
+        wm_st = state.setdefault('walmart',{})
+        wm_st['last_fire_at'] = datetime.now().isoformat(timespec='seconds')
+        wm_st['consecutive_fail'] = 0
+        # Yarın 00:01'e kadar tekrar deneme (date değişene kadar slot atlasın)
+        from datetime import datetime as _dt, timedelta as _td
+        tomorrow = (_dt.now() + _td(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+        wm_st['cooldown_until'] = tomorrow.isoformat()
+        save_state(state)
+        return
     if status != 'READY' or not ready:
         log(f"WM: no eligible candidate this slot (sessiz pas geç)")
         wf = state.setdefault('walmart',{}).setdefault('consecutive_fail', 0)

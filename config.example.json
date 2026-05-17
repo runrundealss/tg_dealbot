@@ -20,7 +20,8 @@
     "savings101_wp_api": "https://savings101hub.com/wp-json/wp/v2/posts",
     "category_name": "Walmart Deals",
     "min_discount_pct": 20,
-    "require_was_price": true
+    "require_was_price": true,
+    "target_per_day": 12
   },
 
   "schedule": {

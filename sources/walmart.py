@@ -264,57 +264,117 @@ def download_images(urls, us_item_id):
     return paths
 
 
+def _ensure_poppins():
+    """Ensure Poppins-Black is on disk; download on first use."""
+    path = "/tmp/fonts/Poppins-Black.ttf"
+    if os.path.exists(path):
+        return path
+    try:
+        os.makedirs("/tmp/fonts", exist_ok=True)
+        urllib.request.urlretrieve(
+            "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Black.ttf",
+            path)
+    except Exception:
+        pass
+    return path
+
+def _contain_paste(canvas, img, box, radius, bg="#ffffff", pad=0.96):
+    """No-crop rounded tile. Product fully visible, never overflows."""
+    x1, y1, x2, y2 = box
+    w, h = x2 - x1, y2 - y1
+    tile = Image.new("RGB", (w, h), bg)
+    iw, ih = img.size
+    s = min(w/iw, h/ih) * pad
+    nw, nh = max(1, int(iw*s)), max(1, int(ih*s))
+    im2 = img.resize((nw, nh), Image.LANCZOS)
+    tile.paste(im2, ((w-nw)//2, (h-nh)//2))
+    mask = Image.new("L", (w, h), 0)
+    md = ImageDraw.Draw(mask)
+    md.rounded_rectangle([0, 0, w, h], radius=radius, fill=255)
+    canvas.paste(tile, (x1, y1), mask)
+
 def build_collage(img_paths, sale, was, out_path):
-    """Step 13-15."""
+    """Step 13-15.
+    v2 layout: 1 big top + 2 bottom, contain mode (no crop), rounded corners,
+    Poppins Black price card top-right, ghost logo bottom-right of top tile.
+    """
     imgs = [Image.open(p).convert("RGB") for p in img_paths[:3]]
     while len(imgs) < 3: imgs.append(imgs[0])
-    W, H = 1080, 1350; GAP = 8; SPLIT_Y = int(H * 0.62)
-    canvas = Image.new("RGB", (W, H), "white")
-    def fc(im, w, h):
-        iw, ih = im.size; s = max(w/iw, h/ih)
-        nw, nh = int(iw*s), int(ih*s)
-        im = im.resize((nw, nh), Image.LANCZOS)
-        return im.crop(((nw-w)//2,(nh-h)//2,(nw-w)//2+w,(nh-h)//2+h))
-    canvas.paste(fc(imgs[0], W, SPLIT_Y - GAP), (0, 0))
-    hw = (W - GAP) // 2; bh = H - SPLIT_Y
-    canvas.paste(fc(imgs[1], hw, bh), (0, SPLIT_Y))
-    canvas.paste(fc(imgs[2], hw, bh), (hw + GAP, SPLIT_Y))
-    # ghost watermark top-left
+    W, H = 1080, 1350
+    GAP = 14
+    canvas = Image.new("RGB", (W, H), "#f7f8fa")
+
+    TOP_H = int(H * 0.62)
+    BOT_H = H - TOP_H - GAP
+    top_box = (GAP, GAP, W - GAP, TOP_H)
+    hw = (W - GAP*3) // 2
+    bl_box = (GAP,           TOP_H + GAP, GAP + hw,        TOP_H + GAP + BOT_H - GAP)
+    br_box = (GAP*2 + hw,    TOP_H + GAP, GAP*2 + hw*2,    TOP_H + GAP + BOT_H - GAP)
+
+    _contain_paste(canvas, imgs[0], top_box, 28)
+    _contain_paste(canvas, imgs[1], bl_box, 22)
+    _contain_paste(canvas, imgs[2], br_box, 22)
+
+    # Ghost logo — small, bottom-right of top tile
     if os.path.exists(LOGO_PATH):
         logo = Image.open(LOGO_PATH).convert("RGBA")
         bb = logo.getbbox()
         if bb: logo = logo.crop(bb)
-        tw = int(W * 0.28); rt = tw / logo.width
-        logo = logo.resize((tw, int(logo.height * rt)), Image.LANCZOS)
+        lw_target = int(W * 0.16)
+        rt = lw_target / logo.width
+        logo = logo.resize((lw_target, int(logo.height * rt)), Image.LANCZOS)
         r, g, b, a = logo.split()
-        a = a.point(lambda x: int(x*0.22)).filter(ImageFilter.GaussianBlur(2))
-        gh = Image.merge("RGBA", (r, g, b, a))
-        cr = canvas.convert("RGBA"); cr.alpha_composite(gh, (40, 40))
+        a = a.point(lambda x: int(x*0.18)).filter(ImageFilter.GaussianBlur(3))
+        ghost = Image.merge("RGBA", (r, g, b, a))
+        cr = canvas.convert("RGBA")
+        gx = top_box[2] - logo.width - 25
+        gy = top_box[3] - logo.height - 25
+        cr.alpha_composite(ghost, (gx, gy))
         canvas = cr.convert("RGB")
-    # price card
-    draw = ImageDraw.Draw(canvas)
-    F_S = ImageFont.truetype("/System/Library/Fonts/Supplemental/Impact.ttf", 110)
-    F_W = ImageFont.truetype("/System/Library/Fonts/Supplemental/Impact.ttf", 70)
+
+    # Price card (Poppins Black) — top-right corner
+    font_path = _ensure_poppins()
+    try:
+        F_S = ImageFont.truetype(font_path, 96)
+        F_W = ImageFont.truetype(font_path, 58)
+    except Exception:
+        # Fallback if font missing
+        F_S = ImageFont.truetype("/System/Library/Fonts/Supplemental/Impact.ttf", 96)
+        F_W = ImageFont.truetype("/System/Library/Fonts/Supplemental/Impact.ttf", 58)
+
+    d = ImageDraw.Draw(canvas)
     sale_t = f"${sale:.2f}"
     was_t  = f"${was:.2f}"
-    bs = draw.textbbox((0,0), sale_t, font=F_S)
-    bw = draw.textbbox((0,0), was_t,  font=F_W)
-    cw = max(bs[2]-bs[0], bw[2]-bw[0]) + 80
-    ch = 220
-    cx = W - cw - 32; cy = SPLIT_Y - ch - 32
-    sh = Image.new("RGBA", (cw+30, ch+30), (0,0,0,0))
-    ImageDraw.Draw(sh).rounded_rectangle([10,10,cw+10,ch+10], radius=14, fill=(0,0,0,90))
-    sh = sh.filter(ImageFilter.GaussianBlur(10))
-    cr = canvas.convert("RGBA"); cr.alpha_composite(sh, (cx-15, cy-5))
+    bs = d.textbbox((0, 0), sale_t, font=F_S)
+    bw = d.textbbox((0, 0), was_t,  font=F_W)
+    pad_x, pad_y = 36, 22
+    cw = max(bs[2]-bs[0], bw[2]-bw[0]) + pad_x*2
+    ch = (bs[3]-bs[1]) + (bw[3]-bw[1]) + pad_y*2 + 16
+    cx = W - cw - 32
+    cy = 32
+
+    # Soft drop shadow
+    sh = Image.new("RGBA", (cw+24, ch+24), (0, 0, 0, 0))
+    ImageDraw.Draw(sh).rounded_rectangle([10, 10, cw+10, ch+10], radius=20, fill=(0, 0, 0, 75))
+    sh = sh.filter(ImageFilter.GaussianBlur(8))
+    cr = canvas.convert("RGBA")
+    cr.alpha_composite(sh, (cx-12, cy-2))
     canvas = cr.convert("RGB")
-    draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle([cx,cy,cx+cw,cy+ch], radius=14, fill="white")
-    sw = bs[2]-bs[0]
-    draw.text((cx+(cw-sw)//2-bs[0], cy+18), sale_t, font=F_S, fill=(34,139,34))
-    ww = bw[2]-bw[0]; wx = cx+(cw-ww)//2-bw[0]; wy = cy+130
-    draw.text((wx, wy), was_t, font=F_W, fill=(80,80,80))
-    draw.line([wx-5, wy+45, wx+ww+5, wy+45], fill=(80,80,80), width=4)
-    canvas.save(out_path, "PNG")
+    d = ImageDraw.Draw(canvas)
+
+    d.rounded_rectangle([cx, cy, cx+cw, cy+ch], radius=20, fill="white")
+    sw = bs[2] - bs[0]
+    sx = cx + (cw - sw) // 2 - bs[0]
+    sy = cy + pad_y - bs[1]
+    d.text((sx, sy), sale_t, font=F_S, fill="#16a34a")   # green
+    ww = bw[2] - bw[0]
+    wx = cx + (cw - ww) // 2 - bw[0]
+    wy = sy + (bs[3]-bs[1]) + 14
+    d.text((wx, wy), was_t, font=F_W, fill="#6b7280")   # gray
+    line_y = wy + (bw[3]-bw[1])//2 + bw[1] + 3
+    d.line([(wx - 6, line_y), (wx + ww + 6, line_y)], fill="#6b7280", width=5)
+
+    canvas.save(out_path, "PNG", optimize=True)
 
 
 def md5_file(path):
@@ -340,16 +400,44 @@ def build_aff_url(us_item_id, sharedid):
 
 def run_one(cfg, token, channel, state, posted_hashes, log_fn):
     """Process ONE eligible Walmart post.
-       Returns: ('SENT', dict) | ('SKIP', step, reason) | ('NO_CANDIDATE', None, None)
+       Returns: ('READY', dict) | ('BLOCKED', None, None) | ('DONE_TODAY', None, None)
+              | ('NO_CANDIDATE', None, None)
     """
     posts = fetch_savings101(cfg)
     log_fn(f"savings101 returned {len(posts)} Walmart-Deals posts")
     if not posts: return ('NO_CANDIDATE', None, None)
 
+    # Filter to TODAY-dated savings101 posts only — old posts are ignored
+    from datetime import datetime as _dt, date as _date
+    today = _date.today()
+    today_posts = []
+    for p in posts:
+        pdate = (p.get('date') or '').replace('Z', '')
+        try:
+            if _dt.fromisoformat(pdate).date() == today:
+                today_posts.append(p)
+        except Exception:
+            pass
+    log_fn(f"  → {len(today_posts)} today-dated posts")
+    if not today_posts:
+        return ('NO_CANDIDATE', None, None)
+
+    # If today's daily target already sent → stop, NO walmart.com visit this slot
+    target_per_day = int((cfg.get('walmart') or {}).get('target_per_day', 12))
+    today_str = today.isoformat()
+    sent_today = sum(
+        1 for e in (state.get('posted') or [])
+        if e.get('source') == 'walmart'
+        and (e.get('posted_at') or '').startswith(today_str)
+    )
+    log_fn(f"  → {sent_today}/{target_per_day} Walmart posts sent today")
+    if sent_today >= target_per_day:
+        return ('DONE_TODAY', None, None)
+
     # Skip ones already in state.posted (by Strapi _id which we use 'wp:'+post_id)
     posted_ids = {e.get('id') for e in state.get('posted', [])}
 
-    for post in posts:
+    for post in today_posts:
         post_uid = f"wp:{post['id']}"
         if post_uid in posted_ids:
             continue
@@ -404,7 +492,10 @@ def run_one(cfg, token, channel, state, posted_hashes, log_fn):
         # Step 11-12: download
         ctx['img_paths'] = download_images(imgs[:3], ctx['us_item_id'])
 
-        # Step 13-15: build collage
+        # Step 13-15: build collage — require both prices (skip if missing)
+        if cur is None or was is None:
+            log_fn(f"[step13] {post_uid} skip: price None (cur={cur}, was={was})")
+            continue
         collage = f"{COLLAGE_DIR}/{ctx['us_item_id']}.png"
         try:
             build_collage(ctx['img_paths'], cur, was, collage)
